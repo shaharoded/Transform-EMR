@@ -8,11 +8,11 @@ from config.dataset_config import *
 
 
 class EMRDataset(Dataset):
-    def __init__(self, df, patient_context_df, numeric_concepts, context_columns):
+    def __init__(self, df, patient_context_df, states, context_columns):
         """
         df: original DataFrame with columns ['PatientID', 'ConceptName', 'StartDateTime', 'EndDateTime', 'Value']
         patient_context_df: DataFrame with columns ['PatientID'] + context_columns
-        numeric_concepts: list of concepts to apply START/END tokenization to
+        states: list of concepts to apply START/END tokenization to
         context_columns: list of context column names (e.g., ['age', 'gender'])
 
         Attr:
@@ -32,7 +32,7 @@ class EMRDataset(Dataset):
         df['RelEndTime'] = (df['EndDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
 
         # Expand tokens
-        self.tokens_df = self._expand_tokens(df, numeric_concepts)
+        self.tokens_df = self._expand_tokens(df, states)
 
         # Create token vocabulary
         unique_tokens = self.tokens_df['EventToken'].unique()
@@ -48,10 +48,10 @@ class EMRDataset(Dataset):
         self.patient_ids = self.tokens_df['PatientID'].unique()
         self.patient_groups = {pid: self.tokens_df[self.tokens_df['PatientID'] == pid] for pid in self.patient_ids}
 
-    def _expand_tokens(self, df, numeric_concepts):
+    def _expand_tokens(self, df, states):
         rows = []
         for _, row in df.iterrows():
-            if row['ConceptName'] in numeric_concepts:
+            if row['ConceptName'] in states:
                 rows.append({
                     'PatientID': row['PatientID'],
                     'EventToken': f"{row['ConceptName']}_{row['Value']}_START",
@@ -153,7 +153,7 @@ if __name__ == "__main__":
         'gender': np.random.choice([0, 1], size=len(patient_ids))  # 0 = male, 1 = female
     })
 
-    dataset = EMRDataset(df, patient_context_df, numeric_concepts=NUMERIC_CONCEPTS, context_columns=['age', 'gender'])
+    dataset = EMRDataset(df, patient_context_df, states=STATES, context_columns=['age', 'gender'])
     print('Number of Patients: ', len(dataset))
     print('Total Number of Records: ', len(dataset.tokens_df))
     print(dataset.tokens_df.head())
