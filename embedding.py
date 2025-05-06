@@ -74,9 +74,9 @@ class EMREmbedding(nn.Module):
     """
 
     def __init__(self, token_vocab_size, ctx_dim, time2vec_dim=8,
-                 embed_dim=128):
+                 embed_dim=128, padding_idx=0):
         super().__init__()
-        self.token_embed = nn.Embedding(token_vocab_size, embed_dim)
+        self.token_embed = nn.Embedding(token_vocab_size, embed_dim, padding_idx=padding_idx)
         self.time2vec = Time2Vec(time2vec_dim)
         self.ctx_token = nn.Parameter(
                 torch.randn(embed_dim))  # learnable [CTX] token
@@ -214,7 +214,12 @@ def train(train_loader, val_loader, vocab_size, ctx_dim=2, time2vec_dim=8, embed
 
     # Device selection
     if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.cuda.is_available():
+            device = 'cuda'
+        elif torch.backends.mps.is_available():
+            device = 'mps'  # MacBook GPU
+        else:
+            device = 'cpu'
 
     # Initialize model and decoder
     embedding_model = EMREmbedding(token_vocab_size=vocab_size, ctx_dim=ctx_dim, time2vec_dim=time2vec_dim,
