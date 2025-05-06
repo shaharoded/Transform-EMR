@@ -18,13 +18,6 @@ This document walks you through every public‑facing class, function, and helpe
 | **`EMREmbedding`**   | Combines **token embeddings**, **time embeddings** (`Time2Vec`), and a learnable **\[CTX]** token enriched by the fixed patient context. Effectively turns a patient timeline into `[CTX] + event₁ + event₂ …` ready for a Transformer. | • `token_ids [B,T]` • `time_deltas [B,T]` • `patient_contexts [B,C]` | `embeddings [B,T+1,D]` where `D = embed_dim`                       |   |
 | **`train` (helper)** | End‑to‑end routine that trains **only the embedding + a linear decoder** with teacher‑forcing language‑model loss. Includes early‑stopping.                                                                                             | PyTorch DataLoaders, model dims, hyper‑params                        | Trained `EMREmbedding`, decoder `nn.Linear`, train & val loss logs |   |
 
-**'Internal wiring'**
-token_ids ──▶ nn.Embedding ┐
-                         add ──▶ event_embeds ─┐
-time_deltas ─▶ Time2Vec ┘                     │
-patient_ctx ─▶ Linear + [CTX] parameter ──┐   │ cat ➠ output [CTX, events]
-                                          ▼   ▼
-                                       final embeddings
 
 *'3. Sequence model – transformer.py'*
 
