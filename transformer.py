@@ -1,215 +1,195 @@
+"""
+transformer.py
+==============
+
+GPT wrapper that plugs into the project‑wide Time2Vec + context
+embedding defined in embedding.py and the batch structure produced
+by dataset.py.
+
+Usage
+-----
+>>> from embedding import EMREmbedding
+>>> from transformer import GPT
+>>> embedder = EMREmbedding(...)
+>>> gpt      = GPT(MODEL_CONFIG, embedder)
+>>> logits, loss = gpt(token_ids, time_deltas, context_vec, targets)
+"""
+
+import math
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
-import math
+import torch.nn.functional as F
 
-# Local Code
-from dataset import EMRDataset
+# ───────── project modules ─────────────────────────────────────────────────── #
 from embedding import EMREmbedding
-from config.model_config import MODEL_CONFIG
+from dataset   import EMRDataset, collate_emr       # optional: needed only in training
+from config.model_config import MODEL_CONFIG        # base hyper‑params
 
-
+# ───────── helpers ─────────────────────────────────────────────────────────── #
 class LayerNorm(nn.Module):
-    """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
     def __init__(self, ndim, bias=True):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(ndim))
-        self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
+        self.bias   = nn.Parameter(torch.zeros(ndim)) if bias else None
 
-    def forward(self, input):
-        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
+    def forward(self, x):
+        return F.layer_norm(x, self.weight.shape, self.weight, self.bias, 1e-5)
+
 
 class CausalSelfAttention(nn.Module):
-    """ Causal Self-Attention mechanism used in the GPT model """
+    """Multi‑head causal self‑attention (no rotary/ALiBi; same math as GPT‑2)."""
 
-    def __init__(self, config):
+    def __init__(self, cfg):
         super().__init__()
-        assert config["n_embd"] % config["n_head"] == 0
-        # Key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config["n_embd"], 3 * config["n_embd"], bias=config["bias"])
-        # Output projection
-        self.c_proj = nn.Linear(config["n_embd"], config["n_embd"], bias=config["bias"])
-        # Dropouts
-        self.attn_dropout = nn.Dropout(config["dropout"])
-        self.resid_dropout = nn.Dropout(config["dropout"])
-        self.n_head = config["n_head"]
-        self.n_embd = config["n_embd"]
-        self.dropout = config["dropout"]
+        assert cfg["n_embd"] % cfg["n_head"] == 0
+        self.n_head = cfg["n_head"]
+        self.n_embd = cfg["n_embd"]
 
-        # Causal mask to ensure that attention is only applied to the left in the input sequence
-        self.register_buffer("bias", torch.tril(torch.ones(config["block_size"], config["block_size"])).view(1, 1, config["block_size"], config["block_size"]))
+        self.qkv   = nn.Linear(cfg["n_embd"], 3 * cfg["n_embd"], bias=cfg["bias"])
+        self.proj  = nn.Linear(cfg["n_embd"], cfg["n_embd"],    bias=cfg["bias"])
+        self.attn_dropout  = nn.Dropout(cfg["dropout"])
+        self.resid_dropout = nn.Dropout(cfg["dropout"])
+
+        # pre‑built causal mask (triangular) – trimmed in forward
+        self.register_buffer(
+            "causal_mask",
+            torch.tril(torch.ones(cfg["block_size"], cfg["block_size"]))
+            .view(1, 1, cfg["block_size"], cfg["block_size"])
+        )
 
     def forward(self, x):
-        B, T, C = x.size()  # Batch size, sequence length, embedding dimensionality (n_embd)
-        # Calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        B, T, C = x.shape
+        q, k, v = self.qkv(x).chunk(3, dim=2)
+        # (B, head, T, head_dim)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
-        # Causal self-attention
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
-        y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C)  # Re-assemble all head outputs side by side
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(k.size(-1))
+        att = att.masked_fill(self.causal_mask[:, :, :T, :T] == 0, float("-inf"))
+        att = self.attn_dropout(F.softmax(att, dim=-1))
+        y   = att @ v                              # (B, head, T, head_dim)
+        y   = y.transpose(1, 2).contiguous().view(B, T, C)  # merge heads
+        return self.resid_dropout(self.proj(y))
 
-        # Output projection
-        y = self.resid_dropout(self.c_proj(y))
-        return y
 
 class MLP(nn.Module):
-
-    def __init__(self, config):
+    def __init__(self, cfg):
         super().__init__()
-        self.c_fc = nn.Linear(config["n_embd"], 4 * config["n_embd"], bias=config["bias"])
-        self.gelu = nn.GELU()
-        self.c_proj = nn.Linear(4 * config["n_embd"], config["n_embd"], bias=config["bias"])
-        self.dropout = nn.Dropout(config["dropout"])
+        self.net = nn.Sequential(
+            nn.Linear(cfg["n_embd"], 4 * cfg["n_embd"], bias=cfg["bias"]),
+            nn.GELU(),
+            nn.Linear(4 * cfg["n_embd"], cfg["n_embd"], bias=cfg["bias"]),
+            nn.Dropout(cfg["dropout"])
+        )
 
-    def forward(self, x):
-        x = self.c_fc(x)
-        x = self.gelu(x)
-        x = self.c_proj(x)
-        x = self.dropout(x)
-        return x
+    def forward(self, x):  return self.net(x)
+
 
 class Block(nn.Module):
-    """ Transformer block, including a self-attention layer and an MLP """
-
-    def __init__(self, config):
+    def __init__(self, cfg):
         super().__init__()
-        self.ln_1 = LayerNorm(config["n_embd"], bias=config["bias"])
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config["n_embd"], bias=config["bias"])
-        self.mlp = MLP(config)
+        self.ln1 = LayerNorm(cfg["n_embd"], bias=cfg["bias"])
+        self.att = CausalSelfAttention(cfg)
+        self.ln2 = LayerNorm(cfg["n_embd"], bias=cfg["bias"])
+        self.mlp = MLP(cfg)
 
     def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        x = x + self.att(self.ln1(x))
+        x = x + self.mlp(self.ln2(x))
         return x
 
+
+# ───────── the GPT wrapper that consumes EMREmbedding ─────────────────────── #
 class GPT(nn.Module):
-    """ GPT Model """
+    """
+    GPT‑style decoder that takes an *external* EMREmbedding instead of its own
+    token/positional embeddings.
 
-    def __init__(self, config):
+    Parameters
+    ----------
+    cfg       : dict – hyper‑parameters (block_size, n_layer, n_head, dropout, ...)
+    embedder  : EMREmbedding – fully initialised shared embedding module
+    """
+
+    def __init__(self, cfg: dict, embedder: EMREmbedding):
         super().__init__()
-        self.config = config
 
-        self.transformer = nn.ModuleDict({
-            "wte": nn.Embedding(config["vocab_size"], config["n_embd"]), # Token embedding layer, text -> embedding vector
-            "wpe": nn.Embedding(config["block_size"], config["n_embd"]), # Positional embedding layer, position -> embedding vector
-            "drop": nn.Dropout(config["dropout"]),
-            "h": nn.ModuleList([Block(config) for _ in range(config["n_layer"])]), # Transformer blocks
-            "ln_f": LayerNorm(config["n_embd"], bias=config["bias"]), # Final layer normalization
-        })
-        self.lm_head = nn.Linear(config["n_embd"], config["vocab_size"], bias=False)
+        # allow the config file to use 'embed_dim' instead of 'n_embd'
+        if "n_embd" not in cfg and "embed_dim" in cfg:
+            cfg["n_embd"] = cfg.pop("embed_dim")
 
-        # Weight tying
-        self.transformer.wte.weight = self.lm_head.weight
+        assert cfg["n_embd"] == embedder.output_dim, (
+            "Config n_embd must equal EMREmbedding.output_dim"
+        )
 
-        # Initialize all weights
+        self.cfg      = cfg
+        self.embedder = embedder
+
+        self.drop = nn.Dropout(cfg["dropout"])
+        self.blocks = nn.ModuleList([Block(cfg) for _ in range(cfg["n_layer"])])
+        self.ln_f  = LayerNorm(cfg["n_embd"], bias=cfg["bias"])
+
+        self.lm_head = nn.Linear(cfg["n_embd"], cfg["vocab_size"], bias=False)
+        self.lm_head.weight = self.embedder.token_embed.weight  # weight tying
+
         self.apply(self._init_weights)
-        for pn, p in self.named_parameters():
-            if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config["n_layer"]))
+        # slightly smaller init for res projections as in gpt‑2
+        for n, p in self.named_parameters():
+            if n.endswith("c_proj.weight"):
+                nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * cfg["n_layer"]))
 
-        # Report the number of parameters
-        print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
-    
-    def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
-        # Collect parameters that require gradients
-        decay_params = [p for n, p in self.named_parameters() if p.requires_grad and p.dim() >= 2]
-        no_decay_params = [p for n, p in self.named_parameters() if p.requires_grad and p.dim() < 2]
-        optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': no_decay_params, 'weight_decay': 0.0}
-        ]
+        print(f"Total params: {self.get_num_params()/1e6:.2f} M")
 
-        # Use AdamW optimizer
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
-        return optimizer
-    
-    def get_num_params(self, non_embedding=True):
-        """
-        Return the number of parameters in the model.
-        For non-embedding count (default), the position embeddings get subtracted.
-        The token embeddings would too, except due to the parameter sharing these
-        params are actually used as weights in the final layer, so we include them.
-        """
-        n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding:
-            n_params -= self.transformer["wpe"].weight.numel()
-        return n_params
-
+    # -------------------------------------------------------- helpers ------- #
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
+                nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def get_num_params(self):
+        return sum(p.numel() for p in self.parameters())
+
+    def configure_optimizers(self, weight_decay, learning_rate, betas):
+        decay, no_decay = [], []
+        for n, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            (decay if p.dim() >= 2 else no_decay).append(p)
+        return torch.optim.AdamW(
+            [{"params": decay,    "weight_decay": weight_decay},
+             {"params": no_decay, "weight_decay": 0.0}],
+            lr=learning_rate, betas=betas)
+
+    # ---------------------------------------------------- forward & loss ---- #
+    def forward(
+        self,
+        token_ids,          # (B, T)
+        time_deltas,        # (B, T)
+        context_vec=None,   # (B, C)
+        targets=None        # (B, T)
+    ):
         """
-        Forward pass of the GPT model.
-        If `targets` is provided, also calculate the loss.
+        All tensors come straight from `collate_emr`:
+            token_ids   – padded token ids
+            time_deltas – relative start times (days)
+            context_vec – age/gender or [] if not used
+            targets     – same size as token_ids (for next‑token loss)
         """
-        device = idx.device
-        b, t = idx.size()
-        assert t <= self.config["block_size"], f"Cannot forward sequence of length {t}, block size is only {self.config['block_size']}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device)  # Shape (t)
+        x = self.drop(self.embedder(token_ids, time_deltas, context_vec))  # (B, T+1, D)
+        for blk in self.blocks:
+            x = blk(x)
+        logits = self.lm_head(self.ln_f(x))                                # (B, T+1, V)
 
-        # Forward the GPT model
-        tok_emb = self.transformer["wte"](idx)  # Token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer["wpe"](pos)  # Position embeddings of shape (t, n_embd)
-        x = self.transformer["drop"](tok_emb + pos_emb)
-        for block in self.transformer["h"]:
-            x = block(x)
-        x = self.transformer["ln_f"](x)
-
+        loss = None
         if targets is not None:
-            # Calculate the loss if targets are provided
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
-            return logits, loss
-        else:
-            # Only forward the lm_head on the last position during inference
-            logits = self.lm_head(x[:, [-1], :])  # Using list [-1] to preserve the time dimension
-            return logits, None
-
-    @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
-        """
-        Generate a sequence of tokens given a starting sequence `idx`.
-        
-        Args:
-            idx (torch.Tensor): The starting sequence of token IDs. This can be a prefix, such as a question in
-                                a QA setup, which the model will continue from. The shape should be (1, sequence_length).
-            max_new_tokens (int): The maximum number of new tokens to generate.
-            temperature (float): The temperature value for controlling the randomness of the generation. 
-                                Lower values (e.g., 0.7) make the output more deterministic, while higher values 
-                                (e.g., 1.2) make it more random.
-            top_k (int, optional): The number of highest probability tokens to keep for sampling. This helps 
-                                focus the generation on the most likely tokens and can reduce output randomness.
-        
-        Returns:
-            torch.Tensor: The complete sequence of token IDs, including both the prefix and the generated tokens.
-        """
-        eot_token_id = TOKENIZER.eot_token  # The token ID for <|endoftext|>
-        for _ in range(max_new_tokens):
-            idx_cond = idx if idx.size(1) <= self.config["block_size"] else idx[:, -self.config["block_size"]:]
-            logits, _ = self(idx_cond)
-            logits = logits[:, -1, :] / temperature  # Scale by temperature
-            if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float('Inf')
-            probs = F.softmax(logits, dim=-1)
-            idx_next = torch.multinomial(probs, num_samples=1)
-            
-            # Check if the generated token is the end-of-text token
-            if idx_next.item() == eot_token_id:
-                break
-            idx = torch.cat((idx, idx_next), dim=1)
-        return idx
+            # Skip [CTX] token (first position) when computing language‑model loss
+            loss = F.cross_entropy(
+                logits[:, :-1].reshape(-1, logits.size(-1)),
+                targets.reshape(-1),
+                ignore_index=self.embedder.token_embed.padding_idx
+            )
+        return logits, loss
