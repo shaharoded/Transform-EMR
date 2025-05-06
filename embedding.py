@@ -281,8 +281,8 @@ if __name__ == "__main__":
     train_context = patient_context_df[patient_context_df['PatientID'].isin(train_ids)].copy()
     val_context = patient_context_df[patient_context_df['PatientID'].isin(val_ids)].copy()
 
-    train_dataset = EMRDataset(train_df, train_context, numeric_concepts=NUMERIC_CONCEPTS, context_columns=['age', 'gender'])
-    val_dataset = EMRDataset(val_df, val_context, numeric_concepts=NUMERIC_CONCEPTS, context_columns=['age', 'gender'])
+    train_dataset = EMRDataset(train_df, train_context, states=STATES, context_columns=['age', 'gender'])
+    val_dataset = EMRDataset(val_df, val_context, states=STATES, context_columns=['age', 'gender'])
 
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_emr)
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_emr)
