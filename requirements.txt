@@ -3,4 +3,3 @@ numpy
 torch
 scikit-learn
 matplotlib
-flash_attn

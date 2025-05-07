@@ -57,44 +57,44 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x):
         B, T, C = x.shape
-        q, k, v = self.qkv(x).chunk(3, dim=2)
-        # (B, head, T, head_dim)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        qkv = self.qkv(x).view(B, T, self.n_head, 3 * C // self.n_head)
+        q, k, v = qkv.unbind(dim=-1)                     # (B, T, h, d)
 
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(k.size(-1))
-        att = att.masked_fill(self.causal_mask[:, :, :T, :T] == 0, float("-inf"))
-        att = self.attn_dropout(F.softmax(att, dim=-1))
-        y   = att @ v                              # (B, head, T, head_dim)
-        y   = y.transpose(1, 2).contiguous().view(B, T, C)  # merge heads
-        return self.resid_dropout(self.proj(y))
+        # PyTorch 2.1 scaled‑dot‑product attention (fuses softmax + matmul)
+        attn = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=None,
+            dropout_p=self.attn_dropout.p if self.training else 0.0,
+            is_causal=True
+        )
+        y = self.proj(attn.reshape(B, T, C))
+        return self.resid_dropout(y)
 
 
 class MLP(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(cfg["n_embd"], 4 * cfg["n_embd"], bias=cfg["bias"]),
-            nn.GELU(),
-            nn.Linear(4 * cfg["n_embd"], cfg["n_embd"], bias=cfg["bias"]),
-            nn.Dropout(cfg["dropout"])
-        )
-
-    def forward(self, x):  return self.net(x)
+        self.w1 = nn.Linear(cfg["n_embd"], 2 * cfg["n_embd"], bias=cfg["bias"])
+        self.w2 = nn.Linear(   cfg["n_embd"],     cfg["n_embd"], bias=cfg["bias"])
+        self.drop = nn.Dropout(cfg["dropout"])
+    def forward(self, x):
+        x, gate = self.w1(x).chunk(2, dim=-1)
+        return self.drop(self.w2(F.gelu(x) * gate))
 
 
 class Block(nn.Module):
     def __init__(self, cfg):
         super().__init__()
+        self.cfg = cfg
         self.ln1 = LayerNorm(cfg["n_embd"], bias=cfg["bias"])
         self.att = CausalSelfAttention(cfg)
         self.ln2 = LayerNorm(cfg["n_embd"], bias=cfg["bias"])
         self.mlp = MLP(cfg)
 
     def forward(self, x):
-        x = x + self.att(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
+        res_scale = 1 / math.sqrt(2 * self.cfg["n_layer"])
+        x = x + res_scale * self.att(self.ln1(x))
+        x = x + res_scale * self.mlp(self.ln2(x))
         return x
 
 
@@ -113,7 +113,7 @@ class GPT(nn.Module):
     embedder  : EMREmbedding – fully initialised shared embedding module
     """
 
-    def __init__(self, cfg: dict, embedder: EMREmbedding):
+    def __init__(self, cfg: dict, embedder: EMREmbedding, use_checkpoint: bool=True):
         super().__init__()
 
         # allow the config file to use 'embed_dim' instead of 'n_embd'
@@ -126,6 +126,7 @@ class GPT(nn.Module):
 
         self.cfg      = cfg
         self.embedder = embedder
+        self.use_checkpoint = use_checkpoint
 
         self.drop = nn.Dropout(cfg["dropout"])
         self.blocks = nn.ModuleList([Block(cfg) for _ in range(cfg["n_layer"])])
@@ -140,7 +141,11 @@ class GPT(nn.Module):
             if n.endswith("c_proj.weight"):
                 nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * cfg["n_layer"]))
 
-        print(f"Total params: {self.get_num_params()/1e6:.2f} M")
+        print(f"[GPT]: Total params: {self.get_num_params()/1e6:.2f} M")
+        
+        if cfg.get("compile", False):
+            print("[GPT]: Compiling model with torch.compile()")
+            self = torch.compile(self)
 
     # -------------------------------------------------------- helpers ------- #
     def _init_weights(self, module):
@@ -166,23 +171,24 @@ class GPT(nn.Module):
             lr=learning_rate, betas=betas)
 
     # ---------------------------------------------------- forward & loss ---- #
-    def forward(
-        self,
-        token_ids,          # (B, T)
-        time_deltas,        # (B, T)
-        context_vec=None,   # (B, C)
-        targets=None        # (B, T)
-    ):
+    def forward(self, token_ids, time_deltas, context_vec=None, targets=None):
         """
         All tensors come straight from `collate_emr`:
-            token_ids   – padded token ids
-            time_deltas – relative start times (days)
-            context_vec – age/gender or [] if not used
-            targets     – same size as token_ids (for next‑token loss)
+            token_ids (torch.Tensor)   – padded token ids, (B, T)
+            time_deltas (torch.Tensor) – relative start times (days), (B, T)
+            context_vec (torch.Tensor) – age/gender or [] if not used, (B, C)
+            targets (torch.Tensor)     – same size as token_ids (for next‑token loss), (B, T)
         """
+        def _forward(block, x):
+            """Allows gradient checkpointing on blocks -> Memory efficient"""
+            return block(x)
+        
         x = self.drop(self.embedder(token_ids, time_deltas, context_vec))  # (B, T+1, D)
         for blk in self.blocks:
-            x = blk(x)
+            if self.training and self.use_checkpoint:
+                x = torch.utils.checkpoint.checkpoint(_forward, blk, x)
+            else:
+                x = blk(x)
         logits = self.lm_head(self.ln_f(x))                                # (B, T+1, V)
 
         loss = None
@@ -191,6 +197,6 @@ class GPT(nn.Module):
             loss = F.cross_entropy(
                 logits[:, :-1].reshape(-1, logits.size(-1)),
                 targets.reshape(-1),
-                ignore_index=self.embedder.token_embed.padding_idx
+                ignore_index=self.embedder.padding_idx
             )
         return logits, loss

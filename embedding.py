@@ -84,6 +84,7 @@ class EMREmbedding(nn.Module):
         super().__init__()
 
         # --- token & time -------------------------------------------------
+        self.padding_idx = padding_idx
         self.token_embed = nn.Embedding(token_vocab_size, embed_dim, padding_idx=padding_idx)
         self.time2vec = Time2Vec(time2vec_dim)
         self.time_proj  = nn.Linear(time2vec_dim, embed_dim, bias=False)
