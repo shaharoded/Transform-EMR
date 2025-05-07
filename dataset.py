@@ -3,7 +3,7 @@ from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
 
-# Local Code
+# ───────── local code ─────────────────────────────────────────────────── #
 from config.dataset_config import *
 
 
@@ -35,7 +35,7 @@ class EMRDataset(Dataset):
         self.tokens_df = self._expand_tokens(df, states)
 
         # Create token vocabulary
-        special_tokens = ["[PAD]", "[CTX]", "[MASK]"]          # 0,1,2
+        special_tokens = ["[PAD]", "[CTX]", "[MASK]"]          # 0, 1, 2
         unique_tokens = self.tokens_df['EventToken'].unique()
         unique_tokens = sorted(set(unique_tokens) - set(special_tokens)) # remove any accidental clashes
         token2id = {tok_id: idx for idx, tok_id in enumerate(special_tokens)}

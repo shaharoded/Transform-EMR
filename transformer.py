@@ -20,10 +20,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ───────── project modules ─────────────────────────────────────────────────── #
+# ───────── local code ─────────────────────────────────────────────────── #
 from embedding import EMREmbedding
-from dataset   import EMRDataset, collate_emr       # optional: needed only in training
-from config.model_config import MODEL_CONFIG        # base hyper‑params
 
 # ───────── helpers ─────────────────────────────────────────────────────────── #
 class LayerNorm(nn.Module):
@@ -105,6 +103,9 @@ class GPT(nn.Module):
     """
     GPT‑style decoder that takes an *external* EMREmbedding instead of its own
     token/positional embeddings.
+
+    The model learns the contextual connections between events in the EMR, and generates a
+    predicted stream of events, from which the expected complications are derived.
 
     Parameters
     ----------
