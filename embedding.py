@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 import pandas as pd
 import numpy as np
 import math
+import matplotlib.pyplot as plt
 
 # Local Code
 from config.dataset_config import *
@@ -221,7 +222,7 @@ def train(train_loader, val_loader, vocab_size, ctx_dim=2, time2vec_dim=8, embed
         train_losses.append(tr_loss)
         val_losses.append(vl_loss)
 
-        print(f"[Training Embedder]: Epoch {epoch:03d}: train={tr_loss:.4f} | val={vl_loss:.4f}")
+        print(f"[Training Embedder]: Epoch {epoch}: train={tr_loss:.4f} | val={vl_loss:.4f}")
 
         # early‑stopping
         if vl_loss + 1e-4 < best_val:           # tiny margin to avoid float jitter
@@ -234,7 +235,21 @@ def train(train_loader, val_loader, vocab_size, ctx_dim=2, time2vec_dim=8, embed
 
     return embedder, decoder, train_losses, val_losses
 
-
+def plot_losses(train_losses, val_losses):
+    """
+    Plot train vs. validation loss to inspect training quality.
+    """
+    epochs = range(1, len(train_losses) + 1)
+    plt.figure()
+    plt.plot(epochs, train_losses, label="Train loss")
+    plt.plot(epochs, val_losses, label="Val loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Cross‑entropy loss")
+    plt.title("Training vs. validation loss")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
 
 
 if __name__ == "__main__":
@@ -273,10 +288,10 @@ if __name__ == "__main__":
     ctx_dim=2
 
     # Training Params
-    N_EPOCHS = 150
+    N_EPOCHS = 50
     PATIENCE = 5    # Epochs
     PAD_TOKEN_ID = 0
-    LR = 1e-4
+    LR = 1e-2
     
     # Initiate and Train
     embedding_model = EMREmbedding(
@@ -285,3 +300,4 @@ if __name__ == "__main__":
     embedding_model, decoder, train_losses, val_losses = train(train_loader, val_loader, len(train_dataset.token2id), 
                                                                ctx_dim=ctx_dim, time2vec_dim=time2vec_dim, embed_dim=embed_dim, lr=LR,
                                                                n_epochs=N_EPOCHS, patience=PATIENCE, pad_token_id=PAD_TOKEN_ID)
+    plot_losses(train_losses, val_losses)
