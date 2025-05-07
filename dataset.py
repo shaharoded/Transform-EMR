@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
 
@@ -35,8 +35,12 @@ class EMRDataset(Dataset):
         self.tokens_df = self._expand_tokens(df, states)
 
         # Create token vocabulary
+        special_tokens = ["[PAD]", "[CTX]", "[MASK]"]          # 0,1,2
         unique_tokens = self.tokens_df['EventToken'].unique()
-        self.token2id = {tok: i for i, tok in enumerate(sorted(unique_tokens))}
+        unique_tokens = sorted(set(unique_tokens) - set(special_tokens)) # remove any accidental clashes
+        token2id = {tok_id: idx for idx, tok_id in enumerate(special_tokens)}
+        token2id.update({tok: i + len(special_tokens) for i, tok in enumerate(unique_tokens)})
+        self.token2id = token2id
         self.tokens_df['TokenID'] = self.tokens_df['EventToken'].map(self.token2id)
 
         # Sort & compute time deltas

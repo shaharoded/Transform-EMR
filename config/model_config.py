@@ -6,11 +6,10 @@ Possible issues to solve:
 """
 
 MODEL_CONFIG = {
-      "block_size": 128,
-      "vocab_size": 50257,
-      "n_layer": 6,
-      "n_head": 6,
-      "embed_dim": 384,
-      "dropout": 0.1,
-      "bias": True
+      "time2vec_dim": 16,
+      "embed_dim": 256,
+      "block_size": 256,  # //e.g. sequence length, number of tokens processed concurrently
+      "n_head": 8,
+      "n_layer": 4,
+      "dropout": 0.1
     }
