@@ -160,7 +160,7 @@ class EMREmbedding(nn.Module):
         return self.decoder(seq[:, :-1, :])  # remove [CTX] for prediction
 
 
-def train_embedder(embedder, train_loader, val_loader):
+def train_embedder(embedder, train_loader, val_loader, resume=True):
     """
     Trains an EMREmbedding model (with internal decoder) on EMR data.
 
@@ -168,6 +168,7 @@ def train_embedder(embedder, train_loader, val_loader):
         embedder (EMREmbedding): A fully initialized embedder with decoder.
         train_loader (DataLoader): Training data.
         val_loader (DataLoader): Validation data.
+        resume (bool): Whether to resume training from ckpt_last.pt if exists.
 
     Returns:
         Tuple: (trained embedder, train_losses, val_losses)
@@ -175,6 +176,11 @@ def train_embedder(embedder, train_loader, val_loader):
     # ----- Device setup -----
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embedder = embedder.to(device)
+
+    # ----- Checkpoint -----
+    ckpt_path = Path(EMBEDDER_CHECKPOINT).resolve()
+    ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+    ckpt_last_path = ckpt_path.parent / "ckpt_last.pt"
 
     # ----- Loss and optimizer -----
     loss_fn = nn.CrossEntropyLoss(ignore_index=embedder.padding_idx)
@@ -186,9 +192,21 @@ def train_embedder(embedder, train_loader, val_loader):
         optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6
     )
 
+    # ----- Optionally resume -----
     train_losses, val_losses = [], []
     best_val, bad_epochs = float("inf"), 0
+    start_epoch = 1
 
+    if resume and ckpt_last_path.exists():
+        print(f"[Phase 1] Resuming from checkpoint: {ckpt_last_path}")
+        ckpt = torch.load(ckpt_last_path, map_location=device)
+        embedder.load_state_dict(ckpt["model_state"])
+        optimizer.load_state_dict(ckpt["optim_state"])
+        scheduler.load_state_dict(ckpt["scheduler_state"])
+        start_epoch = ckpt.get("epoch", 1) + 1
+        best_val = ckpt.get("best_val", float("inf"))
+
+    # ----- Epoch loop -----
     def run_epoch(loader, train_flag=False):
         embedder.train() if train_flag else embedder.eval()
         total_loss = 0.0
@@ -214,7 +232,7 @@ def train_embedder(embedder, train_loader, val_loader):
         return total_loss / len(loader)
 
     # ----- Training loop -----
-    for epoch in range(1, TRAINING_SETTINGS.get('phase1_n_epochs') + 1):
+    for epoch in range(start_epoch, TRAINING_SETTINGS.get('phase1_n_epochs') + 1):
         tr_loss = run_epoch(train_loader, train_flag=True)
         vl_loss = run_epoch(val_loader, train_flag=False)
 
@@ -222,16 +240,24 @@ def train_embedder(embedder, train_loader, val_loader):
         val_losses.append(vl_loss)
 
         print(f"[Training Embedder]: Epoch {epoch:03d} | Train: {tr_loss:.4f} | Val: {vl_loss:.4f}")
-
-        # Update scheduler
         scheduler.step(vl_loss)
 
-        # Early stopping
-        if vl_loss + 1e-4 < best_val:
-            best_val, bad_epochs = vl_loss, 0
+        # Save checkpoint (last)
+        torch.save({
+            "epoch": epoch,
+            "model_state": embedder.state_dict(),
+            "optim_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
+            "best_val": best_val,
+        }, ckpt_last_path)
+
+        # Save best
+        if vl_loss < best_val - 1e-4:
+            best_val = vl_loss
+            torch.save(embedder.state_dict(), ckpt_path)
         else:
             bad_epochs += 1
-            if bad_epochs >= TRAINING_SETTINGS.get('patience'):
+            if bad_epochs >= TRAINING_SETTINGS.get("patience"):
                 print("[Training Embedder]: Early stopping in phase 1!")
                 break
 
@@ -276,7 +302,8 @@ if __name__ == "__main__":
     embedding_model, train_losses, val_losses = train_embedder(
         embedding_model,
         train_loader,
-        val_loader
+        val_loader,
+        resume=True
     )
 
     # Visualize loss curves

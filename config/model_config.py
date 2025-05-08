@@ -4,6 +4,12 @@ Possible issues to solve:
 
 Future work: block size limit the context the model is aware of. Papers like BEHRT tried to handle these aspects.
 """
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]  # Go up to project root
+
+EMBEDDER_CHECKPOINT = str(ROOT_DIR / "checkpoints/phase1/best_embedder.pt")
+TRANSFORMER_CHECKPOINT = str(ROOT_DIR / "checkpoints/phase2/best.pt")
 
 MODEL_CONFIG = {
       "vocab_size": 0, # A place holder to fill after creating the dataset
@@ -19,7 +25,7 @@ MODEL_CONFIG = {
     }
 
 TRAINING_SETTINGS = {
-    "phase1_n_epochs": 5,
+    "phase1_n_epochs": 500,
     "phase2_n_epochs": 50,
     "patience": 5,
     "phase1_learning_rate": 1e-2,

@@ -4,3 +4,4 @@
 # Ignore an entire folder
 venv/
 __pycache__/
+checkpoints/

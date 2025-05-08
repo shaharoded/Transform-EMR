@@ -4,10 +4,6 @@ pre-train.py
 A two-phase transformer training process:
 Phase‑1 : call embedding.train()  ------------>  pretrained_embedder.pt
 Phase‑2 : GPT( pretrained_embedder, fine-tuned during training )  ->  best.pt
-
-TO-DO: 
-- Add loss monitoring here
-- Why is the evaluate function seperate from the training loop - looks weird.
 """
 
 import torch
@@ -15,13 +11,14 @@ from torch.utils.data import DataLoader
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from pathlib import Path
+from tqdm import tqdm
 
 # ───────── local code ─────────────────────────────────────────────────── #
 from dataset import EMRDataset, collate_emr
 from embedding import EMREmbedding, train_embedder
 from transformer import GPT
 from utils import plot_losses
-from config.model_config import MODEL_CONFIG, TRAINING_SETTINGS
+from config.model_config import MODEL_CONFIG, TRAINING_SETTINGS, EMBEDDER_CHECKPOINT, TRANSFORMER_CHECKPOINT
 from config.dataset_config import TEMPORAL_DATA_FILE, CTX_DATA_FILE, STATES
 
 
@@ -44,17 +41,6 @@ def prepare_data():
     val_dl   = DataLoader(val_ds,  batch_size=TRAINING_SETTINGS.get('batch_size'), shuffle=False, collate_fn=collate_emr)
     return train_dl, val_dl
 
-@torch.no_grad()
-def evaluate(model, loader, device):
-    model.eval()
-    total, count = 0.0, 0
-    for batch in loader:
-        b = {k: v.to(device) for k, v in batch.items()}
-        _, loss = model(**b)
-        total += loss.item() * b["targets"].numel()
-        count += b["targets"].numel()
-    return total / count
-
 def phase_one(train_ld, val_ld, embedder):
     return train_embedder(
         embedder=embedder,
@@ -62,14 +48,14 @@ def phase_one(train_ld, val_ld, embedder):
         val_loader=val_ld
     )
 
-def phase_two(train_dl, val_dl, embedder, tune_embedder=True):
+def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=False):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if tune_embedder:
-        embedder.train()  # let it fine-tune
-    else:
+    if not tune_embedder:
         for p in embedder.parameters(): p.requires_grad = False
         embedder.eval()
+    else:
+        embedder.train()
 
     assert MODEL_CONFIG.get("embed_dim") == embedder.output_dim
 
@@ -87,51 +73,102 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True):
         optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-6
     )
 
-    best_val, wait, patience = float("inf"), 0, TRAINING_SETTINGS.get("patience", 5)
-    outdir = Path("checkpoints/phase2")
+    outdir = Path(TRANSFORMER_CHECKPOINT).resolve().parent
     outdir.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(TRAINING_SETTINGS.get("phase2_n_epochs")):
-        model.train()
+    # --- Load latest checkpoint if resume is requested
+    ckpt_last_path = outdir / "ckpt_last.pt"
+    if resume and ckpt_last_path.exists():
+        ckpt = torch.load(ckpt_last_path, map_location=device)
+        model.load_state_dict(ckpt["model_state"])
+        optimizer.load_state_dict(ckpt["optim_state"])
+        print(f"[Phase 2] Resumed from checkpoint: {ckpt_last_path}")
+        start_epoch = ckpt.get("epoch", 0) + 1
+        best_val = ckpt.get("best_val", float("inf"))
+    else:
+        start_epoch = 0
+        best_val = float("inf")
+
+    wait = 0
+    patience = TRAINING_SETTINGS.get("patience", 5)
+    train_losses, val_losses = [], []
+
+    def run_epoch(loader, train_flag=False):
+        model.train() if train_flag else model.eval()
         total_loss = 0.0
-        for batch in train_dl:
-            batch = {k: v.to(device) for k, v in batch.items()}
-            _, loss = model(**batch)
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            total_loss += loss.item()
+        with torch.set_grad_enabled(train_flag):
+            for batch in tqdm(loader, desc="Training" if train_flag else "Validation", leave=False):
+                batch = {k: v.to(device) for k, v in batch.items()}
+                _, loss = model(**batch)
 
-        train_loss = total_loss / len(train_dl)
-        val_loss = evaluate(model, val_dl, device)
+                if train_flag:
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
 
-        scheduler.step(val_loss)  # adjust LR
+                total_loss += loss.item()
+        return total_loss / len(loader)
 
-        print(f"[Training Transformer]: Epoch {epoch:02d} | Train={train_loss:.4f} | Val={val_loss:.4f}")
+    for epoch in range(start_epoch, TRAINING_SETTINGS.get("phase2_n_epochs")):
+        print(f"\n[Epoch {epoch + 1}]")
+        tr_loss = run_epoch(train_dl, train_flag=True)
+        vl_loss = run_epoch(val_dl, train_flag=False)
 
-        torch.save({"model_state": model.state_dict(), "optim_state": optimizer.state_dict()}, outdir / f"ckpt_{epoch:02d}.pt")
-        if val_loss < best_val - 1e-3:
-            best_val, wait = val_loss, 0
-            torch.save(model.state_dict(), outdir / "best.pt")
+        train_losses.append(tr_loss)
+        val_losses.append(vl_loss)
+
+        print(f"[Training Transformer]: Epoch {epoch:02d} | Train={tr_loss:.4f} | Val={vl_loss:.4f}")
+        scheduler.step(vl_loss)
+
+        # Save latest
+        torch.save({
+            "epoch": epoch,
+            "model_state": model.state_dict(),
+            "optim_state": optimizer.state_dict(),
+            "best_val": best_val,
+        }, outdir / "ckpt_last.pt")
+
+        # Save best
+        if vl_loss < best_val - 1e-3:
+            best_val = vl_loss
+            torch.save(model.state_dict(), TRANSFORMER_CHECKPOINT)
+            wait = 0
         else:
             wait += 1
             if wait >= patience:
-                print("[Training Transformer]: Early stopping in phase 2!")
+                print("[Training Transformer]: Early stopping triggered!")
                 break
+    
+    # --- plot loss curves
+    plot_losses(train_losses, val_losses)
 
-def run_two_phase_training():
+
+def run_two_phase_training(start_fresh=False):
     train_dl, val_dl = prepare_data()
 
+    # Initialize the embedder
     embedder = EMREmbedding(
         vocab_size=MODEL_CONFIG['vocab_size'],
         ctx_dim=MODEL_CONFIG['ctx_dim'],
         time2vec_dim=MODEL_CONFIG.get('time2vec_dim'),
         embed_dim=MODEL_CONFIG['embed_dim']
     )
-    embedder, _, _ = phase_one(train_dl, val_dl, embedder)
-    torch.save(embedder.state_dict(), "checkpoints/phase1/best_embedder.pt")
 
+    # Load from checkpoint if exists and not training from scratch
+    ckpt_path = Path(EMBEDDER_CHECKPOINT)
+    if not start_fresh and ckpt_path.exists():
+        embedder.load_state_dict(torch.load(ckpt_path, map_location="cuda" if torch.cuda.is_available() else "cpu"))
+        print(f"[run_two_phase_training] Loaded pretrained embedder from {ckpt_path}")
+    else:
+        embedder, _, _ = phase_one(train_dl, val_dl, embedder)
+        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(embedder.state_dict(), ckpt_path)
+        print(f"[run_two_phase_training] Saved trained embedder to {ckpt_path}")
+
+    # Proceed to phase 2 with the (possibly loaded) embedder
     phase_two(train_dl, val_dl, embedder)
+
+
 
 if __name__ == "__main__":
     run_two_phase_training()
