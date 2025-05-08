@@ -1,7 +1,5 @@
 """
 Possible issues to solve:
- - embed_dim needs to match with Embedder and Transformer
- - vocab_size needs to be automatically extracted from Dataset
  - adjust block_size, n_layer, n_head to data size and shape
 
 Future work: block size limit the context the model is aware of. Papers like BEHRT tried to handle these aspects.
@@ -9,6 +7,7 @@ Future work: block size limit the context the model is aware of. Papers like BEH
 
 MODEL_CONFIG = {
       "vocab_size": 0, # A place holder to fill after creating the dataset
+      "ctx_dim": 0, # A place holder to fill after creating the dataset
       "time2vec_dim": 16,
       "embed_dim": 256,
       "block_size": 256,  # //e.g. sequence length, number of tokens processed concurrently
@@ -20,11 +19,11 @@ MODEL_CONFIG = {
     }
 
 TRAINING_SETTINGS = {
-    'phase1_n_epochs': 500,
-    'phase2_n_epochs': 50,
-    'patience': 5,
-    'learning_rate': 1e-2,
-    
-
-
+    "phase1_n_epochs": 500,
+    "phase2_n_epochs": 50,
+    "patience": 5,
+    "phase1_learning_rate": 1e-2,
+    "phase2_learning_rate": 3e-4,
+    "weight_decay": 1e-2,
+    "batch_size": 4, # Number of patients processed concurrently
 }

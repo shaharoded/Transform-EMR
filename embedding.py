@@ -1,16 +1,19 @@
+"""
+TO-DO: reduce learning rate with scheduler, add small weight decay (5e-4)
+"""
+
 import torch
 import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 import pandas as pd
-import numpy as np
 import math
-import matplotlib.pyplot as plt
 
 # ───────── local code ─────────────────────────────────────────────────── #
 from config.dataset_config import *
 from config.model_config import *
 from dataset import EMRDataset, collate_emr
+from utils import plot_losses
 
 
 class Time2Vec(nn.Module):
@@ -66,7 +69,7 @@ class EMREmbedding(nn.Module):
     The final sequence is prepended with a context-aware [CTX] embedding.
 
     Args:
-        token_vocab_size (int): Number of unique concept-value tokens
+        vocab_size (int): Number of unique concept-value tokens
         ctx_dim (int): Dimension of patient context vector
         time2vec_dim (int): Output dimension of the Time2Vec embedding
         embed_dim (int): Final embedding size for each token/event
@@ -80,12 +83,12 @@ class EMREmbedding(nn.Module):
         embeddings (FloatTensor): [B, T+1, embed_dim] — with a [CTX] token prepended
     """
 
-    def __init__(self, token_vocab_size, ctx_dim, time2vec_dim=8, embed_dim=128, padding_idx=0, dropout=0.1):
+    def __init__(self, vocab_size, ctx_dim, time2vec_dim=8, embed_dim=128, dropout=0.1):
         super().__init__()
 
         # --- token & time -------------------------------------------------
-        self.padding_idx = padding_idx
-        self.token_embed = nn.Embedding(token_vocab_size, embed_dim, padding_idx=padding_idx)
+        self.padding_idx = 0 # Hard coded. Should never change.
+        self.token_embed = nn.Embedding(vocab_size, embed_dim, padding_idx=self.padding_idx)
         self.time2vec = Time2Vec(time2vec_dim)
         self.time_proj  = nn.Linear(time2vec_dim, embed_dim, bias=False)
 
@@ -93,8 +96,7 @@ class EMREmbedding(nn.Module):
         self.ctx_token  = nn.Parameter(torch.randn(embed_dim)) # learnable [CTX] token
         self.context_proj = nn.Linear(ctx_dim, embed_dim, bias=False)
 
-        self.output_dim = embed_dim
-        self.decoder = nn.Linear(embed_dim, token_vocab_size)
+        self.decoder = nn.Linear(embed_dim, vocab_size)
 
         # --- regularisation ----------------------------------------------
         self.dropout = nn.Dropout(dropout)
@@ -102,9 +104,10 @@ class EMREmbedding(nn.Module):
         self.layernorm = nn.LayerNorm(embed_dim)
 
         self.output_dim = embed_dim  # keep public attr for compatibility
+        self.vocab_size = vocab_size  # keep public attr for compatibility
 
         # --- Decoder tied to token embeddings ----------------------------
-        self.decoder = nn.Linear(embed_dim, token_vocab_size, bias=False)
+        self.decoder = nn.Linear(embed_dim, vocab_size, bias=False)
         self.decoder.weight = self.token_embed.weight  # weight tying
 
     def forward(self, token_ids, time_deltas, patient_contexts, return_mask):
@@ -161,8 +164,7 @@ class EMREmbedding(nn.Module):
         return self.decoder(seq[:, :-1, :])  # remove [CTX] for prediction
 
 
-def train_embedder(embedder, train_loader, val_loader, vocab_size, lr=1e-4,
-          n_epochs=150, patience=5, pad_token_id=0, device=None):
+def train_embedder(embedder, train_loader, val_loader):
     """
     Trains an EMREmbedding model (with internal decoder) on EMR data.
 
@@ -170,24 +172,18 @@ def train_embedder(embedder, train_loader, val_loader, vocab_size, lr=1e-4,
         embedder (EMREmbedding): A fully initialized embedder with decoder.
         train_loader (DataLoader): Training data.
         val_loader (DataLoader): Validation data.
-        vocab_size (int): Size of token vocabulary.
-        lr (float): Learning rate.
-        n_epochs (int): Max number of training epochs.
-        patience (int): Early stopping patience.
-        pad_token_id (int): Token to ignore in loss.
-        device (str): 'cuda' or 'cpu'. Auto-detect if None.
 
     Returns:
         Tuple: (trained embedder, train_losses, val_losses)
     """
     # ----- Device setup -----
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     embedder = embedder.to(device)
 
     # ----- Loss and optimizer -----
-    loss_fn = nn.CrossEntropyLoss(ignore_index=pad_token_id)
-    optimizer = torch.optim.AdamW(embedder.parameters(), lr=lr)
+    loss_fn = nn.CrossEntropyLoss(ignore_index=embedder.padding_idx)
+    optimizer = torch.optim.AdamW(embedder.parameters(), 
+                                  lr=TRAINING_SETTINGS.get('phase1_learning_rate'))
 
     train_losses, val_losses = [], []
     best_val, bad_epochs = float("inf"), 0
@@ -205,7 +201,7 @@ def train_embedder(embedder, train_loader, val_loader, vocab_size, lr=1e-4,
                 optimizer.zero_grad()
 
             logits = embedder.forward_with_decoder(token_ids, time_deltas, context_vec)  # [B, T, V]
-            loss = loss_fn(logits.reshape(-1, vocab_size), token_ids.reshape(-1))
+            loss = loss_fn(logits.reshape(-1, embedder.vocab_size), token_ids.reshape(-1))
 
             if train_flag:
                 loss.backward()
@@ -217,7 +213,7 @@ def train_embedder(embedder, train_loader, val_loader, vocab_size, lr=1e-4,
         return total_loss / len(loader)
 
     # ----- Training loop -----
-    for epoch in range(1, n_epochs + 1):
+    for epoch in range(1, TRAINING_SETTINGS.get('phase1_n_epochs') + 1):
         tr_loss = run_epoch(train_loader, train_flag=True)
         vl_loss = run_epoch(val_loader, train_flag=False)
 
@@ -230,27 +226,11 @@ def train_embedder(embedder, train_loader, val_loader, vocab_size, lr=1e-4,
             best_val, bad_epochs = vl_loss, 0
         else:
             bad_epochs += 1
-            if bad_epochs >= patience:
+            if bad_epochs >= TRAINING_SETTINGS.get('patience'):
                 print("[Training Embedder]: Early stopping in phase 1!")
                 break
 
     return embedder, train_losses, val_losses
-
-def plot_losses(train_losses, val_losses):
-    """
-    Plot train vs. validation loss to inspect training quality.
-    """
-    epochs = range(1, len(train_losses) + 1)
-    plt.figure()
-    plt.plot(epochs, train_losses, label="Train loss")
-    plt.plot(epochs, val_losses, label="Val loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Cross‑entropy loss")
-    plt.title("Training vs. validation loss")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
 
 
 if __name__ == "__main__":
@@ -276,37 +256,20 @@ if __name__ == "__main__":
 
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_emr)
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_emr)
-
-    # Hyperparameters
-    ctx_dim       = len(train_dataset.context_df.columns)
-    time2vec_dim  = MODEL_CONFIG.get("time2vec_dim", 16)
-    embed_dim     = MODEL_CONFIG.get("embed_dim", 256)
-    vocab_size    = len(train_dataset.token2id)
-
-    N_EPOCHS      = 50
-    PATIENCE      = 5
-    PAD_TOKEN_ID  = 0
-    LR            = 1e-2
-
+    
     # Initialize embedder with decoder
     embedding_model = EMREmbedding(
-        token_vocab_size=vocab_size,
-        ctx_dim=ctx_dim,
-        time2vec_dim=time2vec_dim,
-        embed_dim=embed_dim,
-        padding_idx=PAD_TOKEN_ID
+        vocab_size=MODEL_CONFIG.get("vocab_size"),
+        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
+        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
+        embed_dim=MODEL_CONFIG.get("embed_dim")
     )
 
     # Train
     embedding_model, train_losses, val_losses = train_embedder(
         embedding_model,
         train_loader,
-        val_loader,
-        vocab_size=vocab_size,
-        lr=LR,
-        n_epochs=N_EPOCHS,
-        patience=PATIENCE,
-        pad_token_id=PAD_TOKEN_ID
+        val_loader
     )
 
     # Visualize loss curves

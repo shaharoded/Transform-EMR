@@ -149,6 +149,10 @@ class GPT(nn.Module):
 
     # -------------------------------------------------------- helpers ------- #
     def _init_weights(self, module):
+        """
+        Custom initialization to ensure stable training.
+        Method based on GPT2 initialization.
+        """
         if isinstance(module, nn.Linear):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
@@ -157,9 +161,18 @@ class GPT(nn.Module):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def get_num_params(self):
+        """
+        Utility method to get the number of parameters in the chosen architecture.
+        """
         return sum(p.numel() for p in self.parameters())
 
     def configure_optimizers(self, weight_decay, learning_rate, betas):
+        """
+        Purpose:
+        Separates parameters into:
+            decay: Typically weights (matrices).
+            no_decay: Biases, LayerNorm weights — we don't apply weight decay here to preserve their stability.
+        """
         decay, no_decay = [], []
         for n, p in self.named_parameters():
             if not p.requires_grad:
