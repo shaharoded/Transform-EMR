@@ -42,11 +42,12 @@ def prepare_data():
     val_dl   = DataLoader(val_ds,  batch_size=TRAINING_SETTINGS.get('batch_size'), shuffle=False, collate_fn=collate_emr)
     return train_dl, val_dl
 
-def phase_one(train_ld, val_ld, embedder):
+def phase_one(train_ld, val_ld, embedder, resume=True):
     return train_embedder(
         embedder=embedder,
         train_loader=train_ld,
-        val_loader=val_ld
+        val_loader=val_ld,
+        resume=resume
     )
 
 def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
@@ -101,7 +102,12 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
         with torch.set_grad_enabled(train_flag):
             for batch in tqdm(loader, desc="Training" if train_flag else "Validation", leave=False):
                 batch = {k: v.to(device) for k, v in batch.items()}
-                _, loss = model(**batch)
+                outputs, loss = model(
+                    token_ids=batch["token_ids"],
+                    time_deltas=batch["time_deltas"],
+                    context_vector=batch["context_vector"],
+                    targets=batch["targets"]
+                )
 
                 if train_flag:
                     optimizer.zero_grad()
@@ -137,7 +143,7 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
         else:
             wait += 1
             if wait >= patience:
-                print("[Training Transformer]: Early stopping triggered!")
+                print("[Phase 2]: Early stopping triggered!")
                 break
     
     # --- plot loss curves

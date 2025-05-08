@@ -98,7 +98,8 @@ class EMRDataset(Dataset):
         return {
             'token_ids': token_ids,
             'time_deltas': time_deltas,
-            'context_vector': context_vector
+            'context_vector': context_vector,
+            'targets': token_ids.clone() # For transformer only
         }
 
 def collate_emr(batch, pad_token_id=0):
