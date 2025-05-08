@@ -49,7 +49,7 @@ def phase_one(train_ld, val_ld, embedder):
         val_loader=val_ld
     )
 
-def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=False):
+def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if not tune_embedder:
@@ -155,10 +155,10 @@ def run_two_phase_training():
     )
 
     # Phase 1: will resume from ckpt internally if exists
-    embedder, _, _ = phase_one(train_dl, val_dl, embedder)
+    embedder, _, _ = phase_one(train_dl, val_dl, embedder, resume=True)
 
     # Phase 2: continues with the best embedder
-    phase_two(train_dl, val_dl, embedder)
+    phase_two(train_dl, val_dl, embedder, resume=True)
 
 
 

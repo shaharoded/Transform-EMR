@@ -260,7 +260,7 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
         else:
             bad_epochs += 1
             if bad_epochs >= TRAINING_SETTINGS.get("patience"):
-                print("[Phase 1]: Early stopping!")
+                print("[Phase 1]: Early stopping triggered!")
                 break
 
     return embedder, train_losses, val_losses
