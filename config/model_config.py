@@ -18,3 +18,13 @@ MODEL_CONFIG = {
       "bias": True,
       "compile": True # Allows JIT compile for the model - Better memory and speed.
     }
+
+TRAINING_SETTINGS = {
+    'phase1_n_epochs': 500,
+    'phase2_n_epochs': 50,
+    'patience': 5,
+    'learning_rate': 1e-2,
+    
+
+
+}

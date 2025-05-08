@@ -4,7 +4,8 @@ import os
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 # Data files
-DATA_FILE = os.path.join(PROJECT_ROOT, 'data', 'synthetic_diabetes_temporal_data.csv')
+TEMPORAL_DATA_FILE = os.path.join(PROJECT_ROOT, 'data', 'synthetic_diabetes_temporal_data.csv')
+CTX_DATA_FILE = os.path.join(PROJECT_ROOT, 'data', 'synthetic_diabetes_context_data.csv')
 
 
 # Pre-definition of concept types

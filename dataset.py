@@ -1,32 +1,36 @@
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
-import numpy as np
+from sklearn.preprocessing import StandardScaler
 
 # ───────── local code ─────────────────────────────────────────────────── #
 from config.dataset_config import *
 
 
 class EMRDataset(Dataset):
-    def __init__(self, df, patient_context_df, states, context_columns):
+    def __init__(self, df, patient_context_df, states, scaler=None):
         """
         df: original DataFrame with columns ['PatientID', 'ConceptName', 'StartDateTime', 'EndDateTime', 'Value']
         patient_context_df: DataFrame with columns ['PatientID'] + context_columns
         states: list of concepts to apply START/END tokenization to
-        context_columns: list of context column names (e.g., ['age', 'gender'])
 
         Attr:
-            self.context_columns (List): Column names for context, as input.
-            self.tokens_df (pd.DataFrame): The dataframe with the longtitudinal records of all the patients.
+            self.scaler (sklearn.preprocessing.StandardScaler): Used to scale the ctx vector. Can be inputed externally for validation/testing.
+            self.context_df (pd.DataFrame): A non-temporal dataset for global context on the patient.
+            self.tokens_df (pd.DataFrame): The temporal dataframe with the longtitudinal records of all the patients.
             self.patient_ids (pd.Series): Unique patient IDs in the data
             self.patient_groups (Dict): {pid: DataFrame} -> A sub-DataFrame containing the records of 1 patient as value
             self.token2id (Dict): token -> ID mapper.
         """
-        self.context_columns = context_columns
+        self.context_df = patient_context_df.set_index("PatientID").astype("float32")
+        
+        # Fit scaler and transform context features
+        self.scaler = scaler if scaler else StandardScaler()
+        self.context_df.loc[:, :] = self.scaler.fit_transform(self.context_df.values)
 
         # Normalize time
-        df['StartDateTime'] = pd.to_datetime(df['StartDateTime'])
-        df['EndDateTime'] = pd.to_datetime(df['EndDateTime'])
+        df['StartDateTime'] = pd.to_datetime(df['StartDateTime'], dayfirst=True)
+        df['EndDateTime'] = pd.to_datetime(df['EndDateTime'], dayfirst=True)
         df['VisitStart'] = df.groupby('PatientID')['StartDateTime'].transform('min')
         df['RelStartTime'] = (df['StartDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
         df['RelEndTime'] = (df['EndDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
@@ -48,7 +52,6 @@ class EMRDataset(Dataset):
         self.tokens_df['TimeDelta'] = self.tokens_df.groupby('PatientID')['TimePoint'].diff().fillna(0)
 
         # Merge patient context
-        self.tokens_df = self.tokens_df.merge(patient_context_df, on='PatientID', how='left')
         self.patient_ids = self.tokens_df['PatientID'].unique()
         self.patient_groups = {pid: self.tokens_df[self.tokens_df['PatientID'] == pid] for pid in self.patient_ids}
 
@@ -90,7 +93,7 @@ class EMRDataset(Dataset):
 
         token_ids = torch.tensor(df['TokenID'].values, dtype=torch.long)
         time_deltas = torch.tensor(df['TimeDelta'].values, dtype=torch.float32)
-        context_vector = torch.tensor(df[self.context_columns].values[0], dtype=torch.float32)
+        context_vector = torch.tensor(self.context_df.loc[pid].values, dtype=torch.float32)
 
         return {
             'token_ids': token_ids,
@@ -144,20 +147,16 @@ def collate_emr(batch, pad_token_id=0):
 
 if __name__ == "__main__":
     
-    # Initiate on random data
-    df = pd.read_csv(DATA_FILE)
+    # Initiate dataset from files
+    temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
+    ctx_df = pd.read_csv(CTX_DATA_FILE)
 
-    # Generate random patient context data
-    patient_ids = df['PatientID'].unique()
-    np.random.seed(42)
 
-    patient_context_df = pd.DataFrame({
-        'PatientID': patient_ids,
-        'age': np.random.randint(18, 66, size=len(patient_ids)),
-        'gender': np.random.choice([0, 1], size=len(patient_ids))  # 0 = male, 1 = female
-    })
-
-    dataset = EMRDataset(df, patient_context_df, states=STATES, context_columns=['age', 'gender'])
+    dataset = EMRDataset(df=temporal_df, patient_context_df=ctx_df, states=STATES)
     print('Number of Patients: ', len(dataset))
     print('Total Number of Records: ', len(dataset.tokens_df))
     print(dataset.tokens_df.head())
+
+    # Get first patient's sample
+    first_sample = dataset[0]
+    print('First Patient Context Vector:', first_sample['context_vector'])
