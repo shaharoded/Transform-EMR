@@ -1,7 +1,3 @@
-"""
-TO-DO: reduce learning rate with scheduler, add small weight decay (5e-4)
-"""
-
 import torch
 import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
@@ -183,7 +179,12 @@ def train_embedder(embedder, train_loader, val_loader):
     # ----- Loss and optimizer -----
     loss_fn = nn.CrossEntropyLoss(ignore_index=embedder.padding_idx)
     optimizer = torch.optim.AdamW(embedder.parameters(), 
-                                  lr=TRAINING_SETTINGS.get('phase1_learning_rate'))
+                                  lr=TRAINING_SETTINGS.get('phase1_learning_rate'),
+                                  weight_decay=TRAINING_SETTINGS.get('weight_decay'))
+    
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6
+    )
 
     train_losses, val_losses = [], []
     best_val, bad_epochs = float("inf"), 0
@@ -222,6 +223,10 @@ def train_embedder(embedder, train_loader, val_loader):
 
         print(f"[Training Embedder]: Epoch {epoch:03d} | Train: {tr_loss:.4f} | Val: {vl_loss:.4f}")
 
+        # Update scheduler
+        scheduler.step(vl_loss)
+
+        # Early stopping
         if vl_loss + 1e-4 < best_val:
             best_val, bad_epochs = vl_loss, 0
         else:
@@ -253,6 +258,8 @@ if __name__ == "__main__":
 
     train_dataset = EMRDataset(train_df, train_context, states=STATES)
     val_dataset = EMRDataset(val_df, val_context, states=STATES, scaler=train_dataset.scaler)
+    MODEL_CONFIG["vocab_size"] = len(set(train_dataset.token2id.keys()) | set(val_dataset.token2id.keys()))
+    MODEL_CONFIG["ctx_dim"] = train_dataset.context_df.shape[1]
 
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_emr)
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_emr)

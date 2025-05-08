@@ -19,11 +19,11 @@ MODEL_CONFIG = {
     }
 
 TRAINING_SETTINGS = {
-    "phase1_n_epochs": 500,
+    "phase1_n_epochs": 5,
     "phase2_n_epochs": 50,
     "patience": 5,
     "phase1_learning_rate": 1e-2,
     "phase2_learning_rate": 3e-4,
-    "weight_decay": 1e-2,
+    "weight_decay": 1e-3,
     "batch_size": 4, # Number of patients processed concurrently
 }

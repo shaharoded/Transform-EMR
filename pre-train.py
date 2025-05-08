@@ -36,14 +36,13 @@ def prepare_data():
     train_ctx, val_ctx = ctx_df[ctx_df.PatientID.isin(train_ids)], ctx_df[ctx_df.PatientID.isin(val_ids)]
 
     train_ds = EMRDataset(train_df, train_ctx, states=STATES)
-    val_ds   = EMRDataset(val_df,  val_ctx,   states=STATES, scaler=train_ds.scaler)
-    
+    val_ds   = EMRDataset(val_df,  val_ctx,   states=STATES, scaler=train_ds.scaler)    
     MODEL_CONFIG['vocab_size'] = len(set(train_ds.token2id.keys()) | set(val_ds.token2id.keys())) # Dinamically updating vocab
+    MODEL_CONFIG['ctx_dim'] = train_ds.context_df.shape[1] # Dinamically updating shape
 
     train_dl = DataLoader(train_ds, batch_size=TRAINING_SETTINGS.get('batch_size'), shuffle=True, collate_fn=collate_emr)
     val_dl   = DataLoader(val_ds,  batch_size=TRAINING_SETTINGS.get('batch_size'), shuffle=False, collate_fn=collate_emr)
-    ctx_dim = train_ds.context_df.columns
-    return train_dl, val_dl, ctx_dim
+    return train_dl, val_dl
 
 @torch.no_grad()
 def evaluate(model, loader, device):
@@ -85,7 +84,7 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True):
 
     # Optional: Reduce LR on plateau
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-6, verbose=True
+        optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-6
     )
 
     best_val, wait, patience = float("inf"), 0, TRAINING_SETTINGS.get("patience", 5)
@@ -121,11 +120,11 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True):
                 break
 
 def run_two_phase_training():
-    train_dl, val_dl, ctx_dim = prepare_data()
+    train_dl, val_dl = prepare_data()
 
     embedder = EMREmbedding(
         vocab_size=MODEL_CONFIG['vocab_size'],
-        ctx_dim=ctx_dim,
+        ctx_dim=MODEL_CONFIG['ctx_dim'],
         time2vec_dim=MODEL_CONFIG.get('time2vec_dim'),
         embed_dim=MODEL_CONFIG['embed_dim']
     )
