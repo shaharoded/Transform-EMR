@@ -198,13 +198,15 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
     start_epoch = 1
 
     if resume and ckpt_last_path.exists():
-        print(f"[Phase 1] Resuming from checkpoint: {ckpt_last_path}")
+        print(f"[Phase 1]: Resuming from checkpoint: {ckpt_last_path}...")
         ckpt = torch.load(ckpt_last_path, map_location=device)
         embedder.load_state_dict(ckpt["model_state"])
         optimizer.load_state_dict(ckpt["optim_state"])
         scheduler.load_state_dict(ckpt["scheduler_state"])
         start_epoch = ckpt.get("epoch", 1) + 1
         best_val = ckpt.get("best_val", float("inf"))
+    else:
+        print(f"[Phase 1]: Starting embedder training loop...")
 
     # ----- Epoch loop -----
     def run_epoch(loader, train_flag=False):
@@ -258,7 +260,7 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
         else:
             bad_epochs += 1
             if bad_epochs >= TRAINING_SETTINGS.get("patience"):
-                print("[Training Embedder]: Early stopping in phase 1!")
+                print("[Phase 1]: Early stopping!")
                 break
 
     return embedder, train_losses, val_losses

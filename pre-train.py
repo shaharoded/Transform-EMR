@@ -23,6 +23,7 @@ from config.dataset_config import TEMPORAL_DATA_FILE, CTX_DATA_FILE, STATES
 
 
 def prepare_data():
+    print(f"[Pre-processing]: Building dataset...")
     temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
     ctx_df = pd.read_csv(CTX_DATA_FILE)
     pids = temporal_df["PatientID"].unique()
@@ -82,10 +83,11 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=False):
         ckpt = torch.load(ckpt_last_path, map_location=device)
         model.load_state_dict(ckpt["model_state"])
         optimizer.load_state_dict(ckpt["optim_state"])
-        print(f"[Phase 2] Resumed from checkpoint: {ckpt_last_path}")
+        print(f"[Phase 2]: Resumed from checkpoint: {ckpt_last_path}")
         start_epoch = ckpt.get("epoch", 0) + 1
         best_val = ckpt.get("best_val", float("inf"))
     else:
+        print(f"[Phase 2]: Starting transformer training loop...")
         start_epoch = 0
         best_val = float("inf")
 
@@ -110,7 +112,6 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=False):
         return total_loss / len(loader)
 
     for epoch in range(start_epoch, TRAINING_SETTINGS.get("phase2_n_epochs")):
-        print(f"\n[Epoch {epoch + 1}]")
         tr_loss = run_epoch(train_dl, train_flag=True)
         vl_loss = run_epoch(val_dl, train_flag=False)
 
@@ -143,10 +144,9 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=False):
     plot_losses(train_losses, val_losses)
 
 
-def run_two_phase_training(start_fresh=False):
+def run_two_phase_training():
     train_dl, val_dl = prepare_data()
 
-    # Initialize the embedder
     embedder = EMREmbedding(
         vocab_size=MODEL_CONFIG['vocab_size'],
         ctx_dim=MODEL_CONFIG['ctx_dim'],
@@ -154,18 +154,10 @@ def run_two_phase_training(start_fresh=False):
         embed_dim=MODEL_CONFIG['embed_dim']
     )
 
-    # Load from checkpoint if exists and not training from scratch
-    ckpt_path = Path(EMBEDDER_CHECKPOINT)
-    if not start_fresh and ckpt_path.exists():
-        embedder.load_state_dict(torch.load(ckpt_path, map_location="cuda" if torch.cuda.is_available() else "cpu"))
-        print(f"[run_two_phase_training] Loaded pretrained embedder from {ckpt_path}")
-    else:
-        embedder, _, _ = phase_one(train_dl, val_dl, embedder)
-        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(embedder.state_dict(), ckpt_path)
-        print(f"[run_two_phase_training] Saved trained embedder to {ckpt_path}")
+    # Phase 1: will resume from ckpt internally if exists
+    embedder, _, _ = phase_one(train_dl, val_dl, embedder)
 
-    # Proceed to phase 2 with the (possibly loaded) embedder
+    # Phase 2: continues with the best embedder
     phase_two(train_dl, val_dl, embedder)
 
 
