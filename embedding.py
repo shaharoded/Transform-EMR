@@ -231,7 +231,7 @@ def train_embedder(embedder, train_loader, val_loader, vocab_size, lr=1e-4,
         else:
             bad_epochs += 1
             if bad_epochs >= patience:
-                print("[Training Embedder]: Early stopping!")
+                print("[Training Embedder]: Early stopping in phase 1!")
                 break
 
     return embedder, train_losses, val_losses
@@ -256,38 +256,31 @@ def plot_losses(train_losses, val_losses):
 if __name__ == "__main__":
     from sklearn.model_selection import train_test_split 
 
-    # Initiate on random data
-    df = pd.read_csv(DATA_FILE)
+    # Initiate on dataset
+    temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
+    ctx_df = pd.read_csv(CTX_DATA_FILE)
 
     # Generate random patient context data
-    patient_ids = df['PatientID'].unique()
-    np.random.seed(42)
-
-    patient_context_df = pd.DataFrame({
-        'PatientID': patient_ids,
-        'age': np.random.randint(18, 66, size=len(patient_ids)),
-        'gender': np.random.choice([0, 1], size=len(patient_ids))  # 0 = male, 1 = female
-    })    
+    patient_ids = temporal_df['PatientID'].unique()  
     
     train_ids, val_ids = train_test_split(patient_ids, test_size=0.2, random_state=42)
 
-    train_df = df[df['PatientID'].isin(train_ids)].copy()
-    val_df = df[df['PatientID'].isin(val_ids)].copy()
+    train_df = temporal_df[temporal_df['PatientID'].isin(train_ids)].copy()
+    val_df = temporal_df[temporal_df['PatientID'].isin(val_ids)].copy()
 
-    train_context = patient_context_df[patient_context_df['PatientID'].isin(train_ids)].copy()
-    val_context = patient_context_df[patient_context_df['PatientID'].isin(val_ids)].copy()
+    train_context = ctx_df[ctx_df['PatientID'].isin(train_ids)].copy()
+    val_context = ctx_df[ctx_df['PatientID'].isin(val_ids)].copy()
 
-    ctx_cols = ["age", "gender"]
-    train_dataset = EMRDataset(train_df, train_context, states=STATES, context_columns=['age', 'gender'])
-    val_dataset = EMRDataset(val_df, val_context, states=STATES, context_columns=['age', 'gender'])
+    train_dataset = EMRDataset(train_df, train_context, states=STATES)
+    val_dataset = EMRDataset(val_df, val_context, states=STATES, scaler=train_dataset.scaler)
 
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_emr)
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_emr)
 
     # Hyperparameters
-    ctx_dim       = len(ctx_cols)
-    time2vec_dim  = MODEL_CONFIG.get("time2vec_dim", 8)
-    embed_dim     = MODEL_CONFIG.get("embed_dim", 128)
+    ctx_dim       = len(train_dataset.context_df.columns)
+    time2vec_dim  = MODEL_CONFIG.get("time2vec_dim", 16)
+    embed_dim     = MODEL_CONFIG.get("embed_dim", 256)
     vocab_size    = len(train_dataset.token2id)
 
     N_EPOCHS      = 50
