@@ -8,11 +8,10 @@ from config.dataset_config import *
 
 
 class EMRDataset(Dataset):
-    def __init__(self, df, patient_context_df, states, scaler=None):
+    def __init__(self, df, patient_context_df, scaler=None):
         """
         df: original DataFrame with columns ['PatientID', 'ConceptName', 'StartDateTime', 'EndDateTime', 'Value']
         patient_context_df: DataFrame with columns ['PatientID'] + context_columns
-        states: list of concepts to apply START/END tokenization to
 
         Attr:
             self.scaler (sklearn.preprocessing.StandardScaler): Used to scale the ctx vector. Can be inputed externally for validation/testing.
@@ -36,7 +35,7 @@ class EMRDataset(Dataset):
         df['RelEndTime'] = (df['EndDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
 
         # Expand tokens
-        self.tokens_df = self._expand_tokens(df, states)
+        self.tokens_df = self._expand_tokens(df)
 
         # Create token vocabulary
         special_tokens = ["[PAD]", "[CTX]", "[MASK]"]          # 0, 1, 2
@@ -55,10 +54,13 @@ class EMRDataset(Dataset):
         self.patient_ids = self.tokens_df['PatientID'].unique()
         self.patient_groups = {pid: self.tokens_df[self.tokens_df['PatientID'] == pid] for pid in self.patient_ids}
 
-    def _expand_tokens(self, df, states):
+    def _expand_tokens(self, df, min_state_duration_sec=1):
         rows = []
         for _, row in df.iterrows():
-            if row['ConceptName'] in states:
+            duration_sec = (row['EndDateTime'] - row['StartDateTime']).total_seconds()
+            is_state = duration_sec > min_state_duration_sec # every event is 1 sec, or more is state / trend
+
+            if is_state:
                 rows.append({
                     'PatientID': row['PatientID'],
                     'EventToken': f"{row['ConceptName']}_{row['Value']}_START",
@@ -76,6 +78,7 @@ class EMRDataset(Dataset):
                     'EventToken': token,
                     'TimePoint': row['RelStartTime']
                 })
+
         return pd.DataFrame(rows)
 
     def __len__(self):
@@ -147,18 +150,18 @@ def collate_emr(batch, pad_token_id=0):
     }
 
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
     
-    # Initiate dataset from files
-    temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
-    ctx_df = pd.read_csv(CTX_DATA_FILE)
+#     # Initiate dataset from files
+#     temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
+#     ctx_df = pd.read_csv(CTX_DATA_FILE)
 
 
-    dataset = EMRDataset(df=temporal_df, patient_context_df=ctx_df, states=STATES)
-    print('Number of Patients: ', len(dataset))
-    print('Total Number of Records: ', len(dataset.tokens_df))
-    print(dataset.tokens_df.head())
+#     dataset = EMRDataset(df=temporal_df, patient_context_df=ctx_df, states=STATES)
+#     print('Number of Patients: ', len(dataset))
+#     print('Total Number of Records: ', len(dataset.tokens_df))
+#     print(dataset.tokens_df.head())
 
-    # Get first patient's sample
-    first_sample = dataset[0]
-    print('First Patient Context Vector:', first_sample['context_vec'])
+#     # Get first patient's sample
+#     first_sample = dataset[0]
+#     print('First Patient Context Vector:', first_sample['context_vec'])

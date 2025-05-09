@@ -4,6 +4,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 import pandas as pd
 import math
+import joblib
 
 # ───────── local code ─────────────────────────────────────────────────── #
 from config.dataset_config import *
@@ -84,6 +85,7 @@ class EMREmbedding(nn.Module):
 
         # --- token & time -------------------------------------------------
         self.padding_idx = 0 # Hard coded. Should never change.
+        self.scaler = None # Place holder. Will be saved during training.
         self.token_embed = nn.Embedding(vocab_size, embed_dim, padding_idx=self.padding_idx)
         self.time2vec = Time2Vec(time2vec_dim)
         self.time_proj  = nn.Linear(time2vec_dim, embed_dim, bias=False)
@@ -91,8 +93,6 @@ class EMREmbedding(nn.Module):
         # --- patient‑context slot ----------------------------------------
         self.ctx_token  = nn.Parameter(torch.randn(embed_dim)) # learnable [CTX] token
         self.context_proj = nn.Linear(ctx_dim, embed_dim, bias=False)
-
-        self.decoder = nn.Linear(embed_dim, vocab_size)
 
         # --- regularisation ----------------------------------------------
         self.dropout = nn.Dropout(dropout)
@@ -160,7 +160,7 @@ class EMREmbedding(nn.Module):
         return self.decoder(seq[:, :-1, :])  # remove [CTX] for prediction
 
 
-def train_embedder(embedder, train_loader, val_loader, resume=True):
+def train_embedder(embedder, train_loader, val_loader, resume=True, scaler=None):
     """
     Trains an EMREmbedding model (with internal decoder) on EMR data.
 
@@ -169,13 +169,15 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
         train_loader (DataLoader): Training data.
         val_loader (DataLoader): Validation data.
         resume (bool): Whether to resume training from ckpt_last.pt if exists.
+        scaler (sklearn.preprocessing.StandardScaler): Used to scale the ctx vector. Passed here to be saved in a checkpoint.
 
     Returns:
         Tuple: (trained embedder, train_losses, val_losses)
     """
-    # ----- Device setup -----
+    # ----- Device and init setup -----
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embedder = embedder.to(device)
+    embedder.scaler = scaler # Save the scaler in the init.
 
     # ----- Checkpoint -----
     ckpt_path = Path(EMBEDDER_CHECKPOINT).resolve()
@@ -262,51 +264,53 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
             if bad_epochs >= TRAINING_SETTINGS.get("patience"):
                 print("[Phase 1]: Early stopping triggered!")
                 break
-
+    # Also save scaler from dataset for use on test set without initiatin a new one
+    joblib.dump(embedder.scaler, os.path.join(ckpt_path.parent, "scaler.pkl"))
+    
     return embedder, train_losses, val_losses
 
 
-if __name__ == "__main__":
-    from sklearn.model_selection import train_test_split 
+# if __name__ == "__main__":
+#     from sklearn.model_selection import train_test_split 
 
-    # Initiate on dataset
-    temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
-    ctx_df = pd.read_csv(CTX_DATA_FILE)
+#     # Initiate on dataset
+#     temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
+#     ctx_df = pd.read_csv(CTX_DATA_FILE)
 
-    # Generate random patient context data
-    patient_ids = temporal_df['PatientID'].unique()  
+#     # Generate random patient context data
+#     patient_ids = temporal_df['PatientID'].unique()  
     
-    train_ids, val_ids = train_test_split(patient_ids, test_size=0.2, random_state=42)
+#     train_ids, val_ids = train_test_split(patient_ids, test_size=0.2, random_state=42)
 
-    train_df = temporal_df[temporal_df['PatientID'].isin(train_ids)].copy()
-    val_df = temporal_df[temporal_df['PatientID'].isin(val_ids)].copy()
+#     train_df = temporal_df[temporal_df['PatientID'].isin(train_ids)].copy()
+#     val_df = temporal_df[temporal_df['PatientID'].isin(val_ids)].copy()
 
-    train_context = ctx_df[ctx_df['PatientID'].isin(train_ids)].copy()
-    val_context = ctx_df[ctx_df['PatientID'].isin(val_ids)].copy()
+#     train_context = ctx_df[ctx_df['PatientID'].isin(train_ids)].copy()
+#     val_context = ctx_df[ctx_df['PatientID'].isin(val_ids)].copy()
 
-    train_dataset = EMRDataset(train_df, train_context, states=STATES)
-    val_dataset = EMRDataset(val_df, val_context, states=STATES, scaler=train_dataset.scaler)
-    MODEL_CONFIG["vocab_size"] = len(set(train_dataset.token2id.keys()) | set(val_dataset.token2id.keys()))
-    MODEL_CONFIG["ctx_dim"] = train_dataset.context_df.shape[1]
+#     train_dataset = EMRDataset(train_df, train_context, states=STATES)
+#     val_dataset = EMRDataset(val_df, val_context, states=STATES, scaler=train_dataset.scaler)
+#     MODEL_CONFIG["vocab_size"] = len(set(train_dataset.token2id.keys()) | set(val_dataset.token2id.keys()))
+#     MODEL_CONFIG["ctx_dim"] = train_dataset.context_df.shape[1]
 
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_emr)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_emr)
+#     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_emr)
+#     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_emr)
     
-    # Initialize embedder with decoder
-    embedding_model = EMREmbedding(
-        vocab_size=MODEL_CONFIG.get("vocab_size"),
-        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
-        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
-        embed_dim=MODEL_CONFIG.get("embed_dim")
-    )
+#     # Initialize embedder with decoder
+#     embedding_model = EMREmbedding(
+#         vocab_size=MODEL_CONFIG.get("vocab_size"),
+#         ctx_dim=MODEL_CONFIG.get("ctx_dim"),
+#         time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
+#         embed_dim=MODEL_CONFIG.get("embed_dim")
+#     )
 
-    # Train
-    embedding_model, train_losses, val_losses = train_embedder(
-        embedding_model,
-        train_loader,
-        val_loader,
-        resume=True
-    )
+#     # Train
+#     embedding_model, train_losses, val_losses = train_embedder(
+#         embedding_model,
+#         train_loader,
+#         val_loader,
+#         resume=True
+#     )
 
-    # Visualize loss curves
-    plot_losses(train_losses, val_losses)
+#     # Visualize loss curves
+#     plot_losses(train_losses, val_losses)

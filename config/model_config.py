@@ -1,6 +1,10 @@
 """
 Possible issues to solve:
- - adjust block_size, n_layer, n_head to data size and shape
+    - Ensure synthetic datasets match the real current states and trends, so they can be used for tests
+    - Ensure scaler is checkpointed and passed normally
+    - Ensure model can infer properly withi this current flow
+    - Ensure synthetic datasets match the real current states and trends, so they can be used for tests
+    - Update README.md with full activation flow and instructions
 
 Future work: block size limit the context the model is aware of. Papers like BEHRT tried to handle these aspects.
 """
@@ -12,8 +16,8 @@ EMBEDDER_CHECKPOINT = str(ROOT_DIR / "checkpoints/phase1/best_embedder.pt")
 TRANSFORMER_CHECKPOINT = str(ROOT_DIR / "checkpoints/phase2/best.pt")
 
 MODEL_CONFIG = {
-      "vocab_size": 0, # A place holder to fill after creating the dataset
-      "ctx_dim": 0, # A place holder to fill after creating the dataset
+      "vocab_size": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
+      "ctx_dim": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
       "time2vec_dim": 16,
       "embed_dim": 256,
       "block_size": 256,  # //e.g. sequence length, number of tokens processed concurrently

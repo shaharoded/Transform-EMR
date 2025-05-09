@@ -2,8 +2,65 @@
 
 This repository implements a two-phase deep learning pipeline for modeling longitudinal Electronic Medical Records (EMRs). The architecture combines temporal embeddings, patient context, and Transformer-based sequence modeling to predict or impute patient events over time.
 
-This model is a part of my thesis and will be used on actual EMR data, stored in a closed environment.
+This model is a part of my thesis and will be used on actual EMR data, stored in a closed environment. For that, it is organized as a package that can be installed:
 
+```bash
+transform_emr/
+│
+├── __init__.py
+├── dataset.py
+├── embedding.py
+├── transformer.py
+├── train.py         # script entry point
+├── utils.py
+├── config/
+│   ├── __init__.py
+│   ├── model_config.py
+│   └── dataset_config.py
+├── data/               # actual EMR data (local copy or symlink)
+├── checkpoints/
+├── README.md
+└── setup.py
+```
+
+You can recreate the package like:
+```bash
+# Create a temporary staging directory without excluded folders
+Copy-Item -Path .\event-prediction-in-diabetes-care `
+          -Destination .\transform_emr_temp `
+          -Recurse -Force -Exclude "data", "checkpoints"
+
+# Now zip it
+Compress-Archive -Path .\transform_emr_temp\* -DestinationPath .\transform_emr.zip -Force
+
+# Cleanup
+Remove-Item -Recurse -Force .\transform_emr_temp
+```
+
+This allows you to install the package in the external environment with:
+```bash
+%pip install -e /path/to/transform_emr  # only once per environment
+```
+
+This allows you to use the code like:
+
+```bash
+from transform_emr.config.model_config import MODEL_CONFIG
+from transform_emr.config.dataset_config import TEMPORAL_DATA_FILE, CTX_DATA_FILE
+
+# Update config dynamically
+MODEL_CONFIG["vocab_size"] = 512
+MODEL_CONFIG["embed_dim"] = 256
+
+# If you need to override file paths:
+from transform_emr.config import dataset_config
+dataset_config.TEMPORAL_DATA_FILE = "my_real_temporal_data.csv"
+dataset_config.CTX_DATA_FILE = "my_real_ctx_data.csv"
+
+# Now run
+from transform_emr.train import run_two_phase_training
+run_two_phase_training()
+```
 ---
 
 ## 🔄 End-to-End Workflow

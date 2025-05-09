@@ -18,8 +18,8 @@ from dataset import EMRDataset, collate_emr
 from embedding import EMREmbedding, train_embedder
 from transformer import GPT
 from utils import plot_losses
-from config.model_config import MODEL_CONFIG, TRAINING_SETTINGS, EMBEDDER_CHECKPOINT, TRANSFORMER_CHECKPOINT
-from config.dataset_config import TEMPORAL_DATA_FILE, CTX_DATA_FILE, STATES
+from config.model_config import MODEL_CONFIG, TRAINING_SETTINGS, TRANSFORMER_CHECKPOINT
+from config.dataset_config import TEMPORAL_DATA_FILE, CTX_DATA_FILE
 
 
 def prepare_data():
@@ -33,21 +33,22 @@ def prepare_data():
     train_df, val_df = temporal_df[temporal_df.PatientID.isin(train_ids)].copy(), temporal_df[temporal_df.PatientID.isin(val_ids)].copy()
     train_ctx, val_ctx = ctx_df[ctx_df.PatientID.isin(train_ids)], ctx_df[ctx_df.PatientID.isin(val_ids)]
 
-    train_ds = EMRDataset(train_df, train_ctx, states=STATES)
-    val_ds   = EMRDataset(val_df,  val_ctx,   states=STATES, scaler=train_ds.scaler)    
+    train_ds = EMRDataset(train_df, train_ctx)
+    val_ds   = EMRDataset(val_df,  val_ctx, scaler=train_ds.scaler)    
     MODEL_CONFIG['vocab_size'] = len(set(train_ds.token2id.keys()) | set(val_ds.token2id.keys())) # Dinamically updating vocab
     MODEL_CONFIG['ctx_dim'] = train_ds.context_df.shape[1] # Dinamically updating shape
 
     train_dl = DataLoader(train_ds, batch_size=TRAINING_SETTINGS.get('batch_size'), shuffle=True, collate_fn=collate_emr)
     val_dl   = DataLoader(val_ds,  batch_size=TRAINING_SETTINGS.get('batch_size'), shuffle=False, collate_fn=collate_emr)
-    return train_dl, val_dl
+    return train_dl, val_dl, train_ds.scaler
 
-def phase_one(train_ld, val_ld, embedder, resume=True):
+def phase_one(train_dl, val_dl, embedder, resume=True, scaler=None):
     return train_embedder(
         embedder=embedder,
-        train_loader=train_ld,
-        val_loader=val_ld,
-        resume=resume
+        train_loader=train_dl,
+        val_loader=val_dl,
+        resume=resume,
+        scaler=scaler
     )
 
 def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
@@ -151,7 +152,7 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
 
 
 def run_two_phase_training():
-    train_dl, val_dl = prepare_data()
+    train_dl, val_dl, scaler = prepare_data()
 
     embedder = EMREmbedding(
         vocab_size=MODEL_CONFIG['vocab_size'],
@@ -161,7 +162,7 @@ def run_two_phase_training():
     )
 
     # Phase 1: will resume from ckpt internally if exists
-    embedder, _, _ = phase_one(train_dl, val_dl, embedder, resume=True)
+    embedder, _, _ = phase_one(train_dl, val_dl, embedder, resume=True, scaler=scaler)
 
     # Phase 2: continues with the best embedder
     phase_two(train_dl, val_dl, embedder, resume=True)

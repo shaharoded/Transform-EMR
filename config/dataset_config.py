@@ -8,7 +8,7 @@ TEMPORAL_DATA_FILE = os.path.join(PROJECT_ROOT, 'data', 'synthetic_diabetes_temp
 CTX_DATA_FILE = os.path.join(PROJECT_ROOT, 'data', 'synthetic_diabetes_context_data.csv')
 
 
-# Pre-definition of concept types
+# Pre-definition of states and trends - TIRPS with duration, for token split to _start and _end
 STATES = [
     'GLUCOSE_MEASURE_LAB', 'GLUCOSE_MEASURE_CAPILLARY', 'HEMOGLOBIN_MEASURE', 'HEMOGLOBIN_DISTRIBUTION_MEASURE',
     'HEMOGLOBIN-A1C_MEASURE', 'HEMATOCRIT_MEASURE', 'MCV_MEASURE', 'MCH_MEASURE', 'LYMPHOCYTES_MEASURE',
@@ -20,13 +20,6 @@ STATES = [
     'BLOOD_PRESSURE_DIASTOLIC_MEASURE', 'HEART_RATE_MEASURE', 'E-GFR_MEASURE', 'BMI_MEASURE'
 ]
 
-# EVENTS = [
-#     'BASAL_BITZUA_DOSAGE', 'BOLUS_BITZUA_DOSAGE',
-#     'STEROIDS_MEDICATIONS', 'ANTIBIOTIC_MEDICATIONS', 'HEART_MEDICATIONS'
-# ]
-
-# CONTEXTS = [
-#     'DIABETES_DIAGNOSIS', 'CANCER_DIAGNOSYS', 'HEART_FAILURE_DIAGNOSIS', 'HYPERTENSION_DIAGNOSIS', 'CHRONIC_KIDNEY_DISEASE_DIAGNOSIS'
-# ]
-
+# Define the prediction targets and <eot> tokens to terminate the inference
 OUTCOMES = ['DEATH', 'COMPLICATION', 'KETOACIDOSIS', 'COMA', 'RELEASE']
+TERMINAL_OUTCOMES = ['DEATH', 'RELEASE']

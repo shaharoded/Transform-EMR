@@ -116,12 +116,8 @@ class GPT(nn.Module):
     def __init__(self, cfg: dict, embedder: EMREmbedding, use_checkpoint: bool=True):
         super().__init__()
 
-        # allow the config file to use 'embed_dim' instead of 'n_embd'
-        if "n_embd" not in cfg and "embed_dim" in cfg:
-            cfg["n_embd"] = cfg.pop("embed_dim")
-
-        assert cfg["n_embd"] == embedder.output_dim, (
-            "Config n_embd must equal EMREmbedding.output_dim"
+        assert cfg["embed_dim"] == embedder.output_dim, (
+            "Config embed_dim must equal EMREmbedding.output_dim"
         )
 
         self.cfg      = cfg
@@ -130,9 +126,9 @@ class GPT(nn.Module):
 
         self.drop = nn.Dropout(cfg["dropout"])
         self.blocks = nn.ModuleList([Block(cfg) for _ in range(cfg["n_layer"])])
-        self.ln_f  = LayerNorm(cfg["n_embd"], bias=cfg["bias"])
+        self.ln_f  = LayerNorm(cfg["embed_dim"], bias=cfg["bias"])
 
-        self.lm_head = nn.Linear(cfg["n_embd"], cfg["vocab_size"], bias=False)
+        self.lm_head = nn.Linear(cfg["embed_dim"], cfg["vocab_size"], bias=False)
         self.lm_head.weight = self.embedder.token_embed.weight  # weight tying
 
         self.apply(self._init_weights)
