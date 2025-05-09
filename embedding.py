@@ -216,7 +216,7 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
         for batch in loader:
             token_ids = batch["token_ids"].to(device)
             time_deltas = batch["time_deltas"].to(device)
-            context_vec = batch["context_vector"].to(device)
+            context_vec = batch["context_vec"].to(device)
 
             if train_flag:
                 optimizer.zero_grad()

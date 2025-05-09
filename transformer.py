@@ -57,8 +57,8 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x):
         B, T, C = x.shape
-        qkv = self.qkv(x).view(B, T, self.n_head, 3 * C // self.n_head)
-        q, k, v = qkv.unbind(dim=-1)                     # (B, T, h, d)
+        qkv = self.qkv(x).view(B, T, self.n_head, 3 * (C // self.n_head))
+        q, k, v = qkv.chunk(3, dim=-1)   # (B, T, h, d)
 
         # PyTorch 2.1 scaled‑dot‑product attention (fuses softmax + matmul)
         attn = F.scaled_dot_product_attention(
@@ -196,10 +196,10 @@ class GPT(nn.Module):
             """Allows gradient checkpointing on blocks -> Memory efficient"""
             return block(x)
         
-        x = self.drop(self.embedder(token_ids, time_deltas, context_vec))  # (B, T+1, D)
+        x = self.drop(self.embedder(token_ids, time_deltas, context_vec, return_mask=False))  # (B, T+1, D)
         for blk in self.blocks:
             if self.training and self.use_checkpoint:
-                x = torch.utils.checkpoint.checkpoint(_forward, blk, x)
+                x = torch.utils.checkpoint.checkpoint(_forward, blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         logits = self.lm_head(self.ln_f(x))                                # (B, T+1, V)

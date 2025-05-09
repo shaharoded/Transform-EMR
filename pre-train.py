@@ -105,7 +105,7 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
                 outputs, loss = model(
                     token_ids=batch["token_ids"],
                     time_deltas=batch["time_deltas"],
-                    context_vector=batch["context_vector"],
+                    context_vec=batch["context_vec"],
                     targets=batch["targets"]
                 )
 

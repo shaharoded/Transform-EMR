@@ -98,7 +98,7 @@ class EMRDataset(Dataset):
         return {
             'token_ids': token_ids,
             'time_deltas': time_deltas,
-            'context_vector': context_vector,
+            'context_vec': context_vector,
             'targets': token_ids.clone() # For transformer only
         }
 
@@ -116,14 +116,14 @@ def collate_emr(batch, pad_token_id=0):
         batch: list of items, each a dictionary with keys:
             - 'token_ids': LongTensor of shape [T_i] for each patient
             - 'time_deltas': FloatTensor of shape [T_i]
-            - 'context_vector': FloatTensor of shape [C]
+            - 'context_vec': FloatTensor of shape [C]
         pad_token_id: token index used to pad shorter sequences.
 
     Returns:
         A dictionary containing:
             - 'token_ids': LongTensor of shape [B, T_max] (padded)
             - 'time_deltas': FloatTensor of shape [B, T_max] (padded with 0.0)
-            - 'context_vector': FloatTensor of shape [B, C]
+            - 'context_vec': FloatTensor of shape [B, C]
     """
     batch_size = len(batch)
     max_len = max(len(x['token_ids']) for x in batch)
@@ -136,13 +136,14 @@ def collate_emr(batch, pad_token_id=0):
         seq_len = len(x['token_ids'])
         padded_token_ids[i, :seq_len] = x['token_ids']
         padded_deltas[i, :seq_len] = x['time_deltas']
-        context_vectors.append(x['context_vector'])
+        context_vectors.append(x['context_vec'])
 
     context_vectors = torch.stack(context_vectors)
     return {
         'token_ids': padded_token_ids,
         'time_deltas': padded_deltas,
-        'context_vector': context_vectors
+        'context_vec': context_vectors,
+        'targets': padded_token_ids.clone()
     }
 
 
@@ -160,4 +161,4 @@ if __name__ == "__main__":
 
     # Get first patient's sample
     first_sample = dataset[0]
-    print('First Patient Context Vector:', first_sample['context_vector'])
+    print('First Patient Context Vector:', first_sample['context_vec'])
