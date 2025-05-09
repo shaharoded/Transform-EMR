@@ -1,42 +1,116 @@
-This document walks you through every public‑facing class, function, and helper that appears in dataset.py, embedding.py, and transformer.py.
+# Event Prediction in EMRs
 
+This repository implements a two-phase deep learning pipeline for modeling longitudinal Electronic Medical Records (EMRs). The architecture combines temporal embeddings, patient context, and Transformer-based sequence modeling to predict or impute patient events over time.
 
-*'1. Data layer – dataset.py'*
+This model is a part of my thesis and will be used on actual EMR data, stored in a closed environment.
 
-| Element                                     | What it does                                                                                                                                                                                                                              | Key inputs                                                                                                                                                                  | Key outputs / state                                                                                                                                                                                                                          |   |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | - |
-| **`EMRDataset` (torch.utils.data.Dataset)** | Converts raw longitudinal EMR tables into per‑patient event sequences, normalised to “days since admission”. Creates a *token vocabulary* on the fly and attaches patient‑level context (age, gender…).                                   | • `df`: EMR dataframe with `PatientID`, `ConceptName`, dates & value • `patient_context_df` • `numeric_concepts` (events that get **START/END** tokens) • `context_columns` | • `tokens_df` – flat table of every event token with a relative timestamp • `token2id` – lookup dict • `patient_groups` – easy slicing by patient id • implements `__len__` (nr patients) & `__getitem__` (returns tensors for one patient)  |   |
-| **`_expand_tokens` (private)**              | Splits each original row into one or two “atomic” tokens.<br>• For *numeric* concepts it produces a pair `<CONCEPT>_<value>_START` and `<CONCEPT>_<value>_END`.<br>• Otherwise maps Boolean or categorical values to a single token name. | One row of the EMR dataframe                                                                                                                                                | A row‑list later converted to `pd.DataFrame` for concatenation                                                                                                                                                                               |   |
-| **`collate_emr`**                           | Custom `DataLoader` *collate\_fn* that pads the variable‑length patient sequences to the batch max length and **stacks** the fixed context vector untouched.                                                                              | Batch (list of dicts) plus `pad_token_id`                                                                                                                                   | Dict with `token_ids`, `time_deltas`, `context_vector` ready for the network                                                                                                                                                                 |   |
+---
 
+## 🔄 End-to-End Workflow
 
-*'2. Representation layer – embedding.py'*
+Raw EMR Tables
+│
+▼
+Per-patient Event Tokenization (with normalized timestamps)
+│
+▼
+🧠 Phase 1 – Train EMREmbedding (token + time + patient context)
+│
+▼
+📚 Phase 2 – Pre-train a Transformer decoder over learned embeddings, as a next-token-prediction task.
+│
+▼
+→ Predict next medical events or missing timeline entries
 
-| Element              | Role                                                                                                                                                                                                                                    | Inputs                                                               | Returns                                                            |   |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------ | - |
-| **`Time2Vec`**       | Encodes a scalar *time‑delta* into a vector with one **linear** channel (trend) and *k‑1* **periodic** channels (learnable sine frequencies).                                                                                           | `t` – tensor `[B,T]` or `[B*T]` of days                              | `[B,T,k]` where `k = out_dim` (default 8)                          |   |
-| **`EMREmbedding`**   | Combines **token embeddings**, **time embeddings** (`Time2Vec`), and a learnable **\[CTX]** token enriched by the fixed patient context. Effectively turns a patient timeline into `[CTX] + event₁ + event₂ …` ready for a Transformer. | • `token_ids [B,T]` • `time_deltas [B,T]` • `patient_contexts [B,C]` | `embeddings [B,T+1,D]` where `D = embed_dim`                       |   |
-| **`train` (helper)** | End‑to‑end routine that trains **only the embedding + a linear decoder** with teacher‑forcing language‑model loss. Includes early‑stopping.                                                                                             | PyTorch DataLoaders, model dims, hyper‑params                        | Trained `EMREmbedding`, decoder `nn.Linear`, train & val loss logs |   |
+---
 
-**'Internal wiring'**
-token_ids ──▶ nn.Embedding ┐
-                         add ──▶ event_embeds ─┐
-time_deltas ─▶ Time2Vec ┘                     │
-patient_ctx ─▶ Linear + [CTX] parameter ──┐   │ cat ➠ output [CTX, events]
-                                          ▼   ▼
-                                       final embeddings
+## 📦 Module Overview
 
-*'3. Sequence model – transformer.py'*
+### 1. **`dataset.py`** – Temporal EMR Preprocessing
 
-| Element                   | Purpose                                                                                                                                                                                   | Shape/Behaviour                           |                                                                    |   |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------ | - |
-| **`LayerNorm`**           | Re‑implements PyTorch `LayerNorm` but allows turning the bias off, mirroring the original GPT code‑base.                                                                                  | Standard LN on last‑dim                   |                                                                    |   |
-| **`CausalSelfAttention`** | Multi‑head self‑attention with an *in‑module* causal mask (`torch.tril`) so events can’t peek into the future. Performs QKV projection, masking, dropout, and output projection.          | Accepts `[B,T,D]` and returns same        |                                                                    |   |
-| **`MLP`**                 | Two‑layer feed‑forward (4 × width) with GELU and dropout—identical to GPT‑2.                                                                                                              | `[B,T,D] → [B,T,D]`                       |                                                                    |   |
-| **`Block`**               | Residual wrapper around **LN ➔ Attention ➔ LN ➔ MLP**.                                                                                                                                    | `[B,T,D]` in / out                        |                                                                    |   |
-| **`GPT`**                 | Full decoder‑only Transformer: token & position embedding tables, `n_layer` **Block** stack, final LN‑F, and weight‑tied LM head. Provides `forward` (with optional loss) and `generate`. | • `idx [B,T]` tokens • optional `targets` | tuple `(logits, loss)` or `(logits, None)`; `generate` outputs ids |   |
+| Component            | Role                                                                                             |
+|---------------------|--------------------------------------------------------------------------------------------------|
+| `EMRDataset`        | Converts raw EMR tables into per-patient token sequences with relative time.                     |
+| `_expand_tokens()`  | Generates `[CONCEPT]_[VALUE]_(START|END)` or single tokens from events. Tokenizing using (START|END) for time intervals allows to capture the length of an event (TIRP - a state or trend).                         |
+| `collate_emr()`     | Pads sequences and returns tensors: `token_ids`, `time_deltas`, and fixed-length context vector. |
 
-Key implementation details:
-*Positional encoding uses a learned embedding table (wpe) rather than sinusoidal.
-*Weight tying – token embed weight shares parameters with the LM head for efficiency.
-*Optimizer helper ‑ configure_optimizers groups parameters to apply weight‑decay only to matrices, matching modern training recipes.
+📌 **Why it matters:**  
+Medical data varies in density and structure across patients. This dynamic preprocessing handles irregularity while preserving medically-relevant sequencing via `START/END` logic and relative timing.
+
+---
+
+### 2. **`embedding.py`** – EMR Representation Learning
+
+| Component           | Role                                                                                              |
+|--------------------|---------------------------------------------------------------------------------------------------|
+| `Time2Vec`          | Learns periodic + trend encoding from inter-event durations.                                      |
+| `EMREmbedding`      | Combines token, time, and patient context embeddings. Adds `[CTX]` token for global patient info. |
+| `train_embedder()`  | Trains the embedding model with teacher-forced next-token prediction.                            |
+
+🧠 **Insight:**  
+Phase 1 learns a robust, patient-aware representation of their event sequences. It isolates the core structure of patient timelines without being confounded by the autoregressive depth of Transformers.
+
+---
+
+### 3. **`transformer.py`** – Causal Language Model over EMR Timelines
+
+| Component           | Role                                                                                              |
+|--------------------|---------------------------------------------------------------------------------------------------|
+| `GPT`               | Transformer decoder stack over learned embeddings.                                                |
+| `CausalSelfAttention` | Multi-head attention using causal mask to enforce chronology.                                 |
+| `configure_optimizers()` | Groups model parameters for AdamW with correct weight decay policy.                         |
+
+⚙️ **Phase 2: Learning Sequence Dependencies**  
+Once the EMR structure is captured, the transformer learns to model sequential dependencies in event progression:  
+- What tends to follow a certain event?  
+- How does timing affect outcomes?  
+- How does patient context modulate the trajectory?
+
+---
+
+## ✅ Model Capabilities
+
+- ✔️ **Handles irregular time-series data** using relative deltas and Time2Vec.
+- ✔️ **Captures both short- and long-range dependencies** with deep transformer blocks.
+- ✔️ **Supports variable-length patient histories** using custom collate and attention masks.
+- ✔️ **Imputes and predicts** events in structured EMR timelines.
+
+---
+
+## 🧪 Synthetic Data & Testing
+
+The project includes a `data/` folder with synthetic EMR samples for testing architecture logic, convergence behavior, and debugging training scripts.
+
+NOTE: This data is random, so you will not get a properly trained model out of it. It's just for reference.
+
+---
+
+## 🔧 Configuration
+
+All hyperparameters and file paths are managed under:
+- `config/model_config.py`
+- `config/dataset_config.py`
+
+---
+
+## 🏁 Getting Started
+
+```bash
+# Phase 1+2: Run full pipeline with Transformer
+python pre-train.py
+
+# You can also train a stand-alone embedder using:
+python embedding.py
+```
+Use Tensorboard or utils.plot_losses() to inspect learning curves.
+---
+
+## 🔍 Notes
+Currently tested on PyTorch 2.1 with `torch.compile()` enabled.
+
+Training logs and checkpoints are saved under `checkpoints/phase1/` and `checkpoints/phase2/`.
+
+---
+
+## 📚 Citation
+Inspired by recent advancements in temporal deep learning, sequence modeling in healthcare (BEHRT, RETAIN, Med-BERT), and Time2Vec (Kazemi et al.).
