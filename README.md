@@ -31,7 +31,7 @@ Per-patient Event Tokenization (with normalized timestamps)
 | Component            | Role                                                                                             |
 |---------------------|--------------------------------------------------------------------------------------------------|
 | `EMRDataset`        | Converts raw EMR tables into per-patient token sequences with relative time.                     |
-| `_expand_tokens()`  | Generates CONCEPT_VALUE_(START|END) or single tokens from events. Tokenizing using (START|END) for time intervals allows to capture the length of an event (TIRP - a state or trend).                         |
+| `_expand_tokens()`  | Generates CONCEPT_VALUE_(START/END) or single tokens from events. Tokenizing using (START/END) for time intervals allows to capture the length of an event (TIRP - a state or trend).                         |
 | `collate_emr()`     | Pads sequences and returns tensors: `token_ids`, `time_deltas`, and fixed-length context vector. |
 
 📌 **Why it matters:**  
