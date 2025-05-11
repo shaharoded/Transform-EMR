@@ -5,14 +5,6 @@ transformer.py
 GPT wrapper that plugs into the project‑wide Time2Vec + context
 embedding defined in embedding.py and the batch structure produced
 by dataset.py.
-
-Usage
------
->>> from embedding import EMREmbedding
->>> from transformer import GPT
->>> embedder = EMREmbedding(...)
->>> gpt      = GPT(MODEL_CONFIG, embedder)
->>> logits, loss = gpt(token_ids, time_deltas, context_vec, targets)
 """
 
 import math

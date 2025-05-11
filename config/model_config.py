@@ -2,8 +2,7 @@
 Possible issues to solve:
     - Ensure synthetic datasets match the real current states and trends, so they can be used for tests
     - Ensure scaler is checkpointed and passed normally
-    - Ensure model can infer properly withi this current flow
-    - Ensure synthetic datasets match the real current states and trends, so they can be used for tests
+    - Ensure model can infer properly within this current flow
     - Update README.md with full activation flow and instructions
 
 Future work: block size limit the context the model is aware of. Papers like BEHRT tried to handle these aspects.

@@ -72,7 +72,7 @@ class EMRDataset(Dataset):
                     'TimePoint': row['RelEndTime']
                 })
             else:
-                token = row['ConceptName'] if row['Value'] == "True" else f"{row['ConceptName']}_{row['Value']}"
+                token = row['ConceptName'] if row['Value'] in ("True", "TRUE") else f"{row['ConceptName']}_{row['Value']}"
                 rows.append({
                     'PatientID': row['PatientID'],
                     'EventToken': token,
@@ -150,18 +150,19 @@ def collate_emr(batch, pad_token_id=0):
     }
 
 
-# if __name__ == "__main__":
+# Local env tests:
+if __name__ == "__main__":
     
-#     # Initiate dataset from files
-#     temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
-#     ctx_df = pd.read_csv(CTX_DATA_FILE)
+    # Initiate dataset from files
+    temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
+    ctx_df = pd.read_csv(CTX_DATA_FILE)
 
 
-#     dataset = EMRDataset(df=temporal_df, patient_context_df=ctx_df, states=STATES)
-#     print('Number of Patients: ', len(dataset))
-#     print('Total Number of Records: ', len(dataset.tokens_df))
-#     print(dataset.tokens_df.head())
+    dataset = EMRDataset(df=temporal_df, patient_context_df=ctx_df)
+    print('Number of Patients: ', len(dataset))
+    print('Total Number of Records: ', len(dataset.tokens_df))
+    print(dataset.tokens_df.head())
 
-#     # Get first patient's sample
-#     first_sample = dataset[0]
-#     print('First Patient Context Vector:', first_sample['context_vec'])
+    # Get first patient's sample
+    first_sample = dataset[0]
+    print('First Patient Context Vector:', first_sample['context_vec'])
