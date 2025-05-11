@@ -1,16 +1,13 @@
+import os
 import torch
 import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data import DataLoader
-import pandas as pd
 import math
 import joblib
+from pathlib import Path
 
 # ───────── local code ─────────────────────────────────────────────────── #
-from config.dataset_config import *
-from config.model_config import *
-from dataset import EMRDataset, collate_emr
-from utils import plot_losses
+from transform_emr.config.model_config import *
 
 
 class Time2Vec(nn.Module):
@@ -268,49 +265,3 @@ def train_embedder(embedder, train_loader, val_loader, resume=True, scaler=None)
     joblib.dump(embedder.scaler, os.path.join(ckpt_path.parent, "scaler.pkl"))
     
     return embedder, train_losses, val_losses
-
-
-# if __name__ == "__main__":
-#     from sklearn.model_selection import train_test_split 
-
-#     # Initiate on dataset
-#     temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
-#     ctx_df = pd.read_csv(CTX_DATA_FILE)
-
-#     # Generate random patient context data
-#     patient_ids = temporal_df['PatientID'].unique()  
-    
-#     train_ids, val_ids = train_test_split(patient_ids, test_size=0.2, random_state=42)
-
-#     train_df = temporal_df[temporal_df['PatientID'].isin(train_ids)].copy()
-#     val_df = temporal_df[temporal_df['PatientID'].isin(val_ids)].copy()
-
-#     train_context = ctx_df[ctx_df['PatientID'].isin(train_ids)].copy()
-#     val_context = ctx_df[ctx_df['PatientID'].isin(val_ids)].copy()
-
-#     train_dataset = EMRDataset(train_df, train_context, states=STATES)
-#     val_dataset = EMRDataset(val_df, val_context, states=STATES, scaler=train_dataset.scaler)
-#     MODEL_CONFIG["vocab_size"] = len(set(train_dataset.token2id.keys()) | set(val_dataset.token2id.keys()))
-#     MODEL_CONFIG["ctx_dim"] = train_dataset.context_df.shape[1]
-
-#     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_emr)
-#     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_emr)
-    
-#     # Initialize embedder with decoder
-#     embedding_model = EMREmbedding(
-#         vocab_size=MODEL_CONFIG.get("vocab_size"),
-#         ctx_dim=MODEL_CONFIG.get("ctx_dim"),
-#         time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
-#         embed_dim=MODEL_CONFIG.get("embed_dim")
-#     )
-
-#     # Train
-#     embedding_model, train_losses, val_losses = train_embedder(
-#         embedding_model,
-#         train_loader,
-#         val_loader,
-#         resume=True
-#     )
-
-#     # Visualize loss curves
-#     plot_losses(train_losses, val_losses)

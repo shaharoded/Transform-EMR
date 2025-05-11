@@ -7,12 +7,14 @@ Possible issues to solve:
 
 Future work: block size limit the context the model is aware of. Papers like BEHRT tried to handle these aspects.
 """
-from pathlib import Path
+import os
 
-ROOT_DIR = Path(__file__).resolve().parents[1]  # Go up to project root
+# Get project root (2 levels up from config/)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-EMBEDDER_CHECKPOINT = str(ROOT_DIR / "checkpoints/phase1/best_embedder.pt")
-TRANSFORMER_CHECKPOINT = str(ROOT_DIR / "checkpoints/phase2/best.pt")
+# Checkpoint paths
+EMBEDDER_CHECKPOINT = os.path.join(PROJECT_ROOT, 'checkpoints', 'phase1', 'best_embedder.pt')
+TRANSFORMER_CHECKPOINT = os.path.join(PROJECT_ROOT, 'checkpoints', 'phase2', 'best_model.pt')
 
 MODEL_CONFIG = {
       "vocab_size": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.

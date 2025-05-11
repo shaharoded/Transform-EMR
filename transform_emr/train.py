@@ -14,18 +14,18 @@ from pathlib import Path
 from tqdm import tqdm
 
 # ───────── local code ─────────────────────────────────────────────────── #
-from dataset import EMRDataset, collate_emr
-from embedding import EMREmbedding, train_embedder
-from transformer import GPT
-from utils import plot_losses
-from config.model_config import MODEL_CONFIG, TRAINING_SETTINGS, TRANSFORMER_CHECKPOINT
-from config.dataset_config import TEMPORAL_DATA_FILE, CTX_DATA_FILE
+from transform_emr.dataset import EMRDataset, collate_emr
+from transform_emr.embedding import EMREmbedding, train_embedder
+from transform_emr.transformer import GPT
+from transform_emr.utils import plot_losses
+from transform_emr.config.model_config import MODEL_CONFIG, TRAINING_SETTINGS, TRANSFORMER_CHECKPOINT
+from transform_emr.config.dataset_config import TRAIN_TEMPORAL_DATA_FILE, TRAIN_CTX_DATA_FILE
 
 
 def prepare_data():
     print(f"[Pre-processing]: Building dataset...")
-    temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
-    ctx_df = pd.read_csv(CTX_DATA_FILE)
+    temporal_df = pd.read_csv(TRAIN_TEMPORAL_DATA_FILE)
+    ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE)
     pids = temporal_df["PatientID"].unique()
     train_ids, val_ids = train_test_split(pids, test_size=0.2, random_state=42)
 
@@ -169,5 +169,5 @@ def run_two_phase_training():
 
 
 
-if __name__ == "__main__":
-    run_two_phase_training()
+# if __name__ == "__main__":
+#     run_two_phase_training()

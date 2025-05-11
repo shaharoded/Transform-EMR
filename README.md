@@ -5,62 +5,132 @@ This repository implements a two-phase deep learning pipeline for modeling longi
 This model is a part of my thesis and will be used on actual EMR data, stored in a closed environment. For that, it is organized as a package that can be installed:
 
 ```bash
-transform_emr/
+event-prediction-in-diabetes-care/
 │
-├── __init__.py
-├── dataset.py
-├── embedding.py
-├── transformer.py
-├── train.py         # script entry point
-├── utils.py
-├── config/
-│   ├── __init__.py
-│   ├── model_config.py
-│   └── dataset_config.py
-├── data/               # actual EMR data (local copy or symlink)
-├── checkpoints/
-├── README.md
-└── setup.py
+├── transform_emr/           # Core Python package
+│   ├── dataset.py           # Data preprocessing logic
+│   ├── embedding.py         # Embedding model (EMREmbedding)
+│   ├── transformer.py       # Transformer architecture
+│   ├── train.py             # Training logic
+│   ├── inference.py         # Inference pipeline
+│   └── utils.py             # Utility functions
+│
+├── config/                    # Configuration modules
+│
+├── data/                      # External data folder (for synthetic or real EMR)
+│   ├── train/
+│   └── test/
+│
+├── tests/                     # Unit and integration tests
+│
+├── setup.py
+└── README.md
 ```
 
-You can recreate the package like:
+---
+
+## 🛠️ Installation
+
+Install the project as an editable package from the **root** directory:
+
 ```bash
-# Create a temporary staging directory without excluded folders
-Copy-Item -Path .\event-prediction-in-diabetes-care `
-          -Destination .\transform_emr_temp `
-          -Recurse -Force -Exclude "data", "checkpoints"
-
-# Now zip it
-Compress-Archive -Path .\transform_emr_temp\* -DestinationPath .\transform_emr.zip -Force
-
-# Cleanup
-Remove-Item -Recurse -Force .\transform_emr_temp
+pip install -e .
 ```
 
-This allows you to install the package in the external environment with:
-```bash
-%pip install -e /path/to/transform_emr  # only once per environment
+```python
+from transform_emr.dataset import EMRDataset
+from transform_emr.train import run_two_phase_training
 ```
 
-This allows you to use the code like:
+---
 
-```bash
-from transform_emr.config.model_config import MODEL_CONFIG
-from transform_emr.config.dataset_config import TEMPORAL_DATA_FILE, CTX_DATA_FILE
+## 🚀 Usage
 
-# Update config dynamically
-MODEL_CONFIG["vocab_size"] = 512
-MODEL_CONFIG["embed_dim"] = 256
+### 1. Prepare Dataset and Update Config
 
-# If you need to override file paths:
-from transform_emr.config import dataset_config
-dataset_config.TEMPORAL_DATA_FILE = "my_real_temporal_data.csv"
-dataset_config.CTX_DATA_FILE = "my_real_ctx_data.csv"
+```python
+import pandas as pd
+from transform_emr.dataset import EMRDataset
+from transform_emr.config import dataset_config, model_config
 
-# Now run
+# Load data
+df = pd.read_csv(dataset_config.TRAIN_TEMPORAL_DATA_FILE)
+ctx_df = pd.read_csv(dataset_config.TRAIN_CTX_DATA_FILE)
+
+# Initialize dataset and update config dynamically
+ds = EMRDataset(df, ctx_df)
+model_config.MODEL_CONFIG["vocab_size"] = len(ds.token2id)
+model_config.MODEL_CONFIG["ctx_dim"] = ds.context_df.shape[1]
+```
+
+### 2. Train Model
+
+```python
 from transform_emr.train import run_two_phase_training
 run_two_phase_training()
 ```
+
+Model checkpoints and scaler are saved under `checkpoints/phase1/` and `checkpoints/phase2/`.
+
+---
+
+## 🧪 Running Tests
+
+Run all tests:
+
+```bash
+pytest tests/
+```
+
+📝 If you have **not trained the model yet**, skip inference-related tests:
+
+```bash
+pytest tests/test_dataset.py tests/test_embedder.py
+```
+
+⚠️ Inference tests assume the presence of:
+- `checkpoints/phase1/best_embedder.pt`
+- `checkpoints/phase1/scaler.pkl`
+- `checkpoints/phase2/best_transformer.pt`
+
+To fix size mismatch errors:
+```bash
+rm -r checkpoints/
+# Then rerun training
+```
+
+---
+
+## 📦 Packaging Notes
+
+To package without data/checkpoints:
+
+```powershell
+# Clean up any existing temp folder
+Remove-Item -Recurse -Force .\transform_emr_temp -ErrorAction SilentlyContinue
+
+# Recreate the temp folder
+New-Item -ItemType Directory -Path .\transform_emr_temp | Out-Null
+
+# Copy only what's needed
+Copy-Item -Path .\transform_emr\* -Destination .\transform_emr_temp\transform_emr -Recurse
+Copy-Item -Path .\setup.py, .\README.md, .\requirements.txt -Destination .\transform_emr_temp
+
+# Zip it
+Compress-Archive -Path .\transform_emr_temp\* -DestinationPath .\emr_model.zip -Force
+
+# Clean up
+Remove-Item -Recurse -Force .\transform_emr_temp
+```
+
+---
+
+## 📌 Notes
+
+- This project uses synthetic EMR data (`data/train/` and `data/test/`).
+- For best results, ensure consistent preprocessing when saving/loading models.
+- `model_config.py` should only be updated **after** dataset initialization to avoid embedding size mismatches.
+
 ---
 
 ## 🔄 End-to-End Workflow
@@ -131,41 +201,6 @@ Once the EMR structure is captured, the transformer learns to model sequential d
 - ✔️ **Captures both short- and long-range dependencies** with deep transformer blocks.
 - ✔️ **Supports variable-length patient histories** using custom collate and attention masks.
 - ✔️ **Imputes and predicts** events in structured EMR timelines.
-
----
-
-## 🧪 Synthetic Data & Testing
-
-The project includes a `data/` folder with synthetic EMR samples for testing architecture logic, convergence behavior, and debugging training scripts.
-
-NOTE: This data is random, so you will not get a properly trained model out of it. It's just for reference.
-
----
-
-## 🔧 Configuration
-
-All hyperparameters and file paths are managed under:
-- `config/model_config.py`
-- `config/dataset_config.py`
-
----
-
-## 🏁 Getting Started
-
-```bash
-# Phase 1+2: Run full pipeline with Transformer
-python pre-train.py
-
-# You can also train a stand-alone embedder using:
-python embedding.py
-```
-Use Tensorboard or utils.plot_losses() to inspect learning curves.
----
-
-## 🔍 Notes
-Currently tested on PyTorch 2.1 with `torch.compile()` enabled.
-
-Training logs and checkpoints are saved under `checkpoints/phase1/` and `checkpoints/phase2/`.
 
 ---
 

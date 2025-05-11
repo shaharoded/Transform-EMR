@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # ───────── local code ─────────────────────────────────────────────────── #
-from embedding import EMREmbedding
+from transform_emr.embedding import EMREmbedding
 
 # ───────── helpers ─────────────────────────────────────────────────────────── #
 class LayerNorm(nn.Module):
@@ -31,12 +31,12 @@ class CausalSelfAttention(nn.Module):
 
     def __init__(self, cfg):
         super().__init__()
-        assert cfg["n_embd"] % cfg["n_head"] == 0
+        assert cfg["embed_dim"] % cfg["n_head"] == 0
         self.n_head = cfg["n_head"]
-        self.n_embd = cfg["n_embd"]
+        self.n_embd = cfg["embed_dim"]
 
-        self.qkv   = nn.Linear(cfg["n_embd"], 3 * cfg["n_embd"], bias=cfg["bias"])
-        self.proj  = nn.Linear(cfg["n_embd"], cfg["n_embd"],    bias=cfg["bias"])
+        self.qkv   = nn.Linear(cfg["embed_dim"], 3 * cfg["embed_dim"], bias=cfg["bias"])
+        self.proj  = nn.Linear(cfg["embed_dim"], cfg["embed_dim"],    bias=cfg["bias"])
         self.attn_dropout  = nn.Dropout(cfg["dropout"])
         self.resid_dropout = nn.Dropout(cfg["dropout"])
 
@@ -66,8 +66,8 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.w1 = nn.Linear(cfg["n_embd"], 2 * cfg["n_embd"], bias=cfg["bias"])
-        self.w2 = nn.Linear(   cfg["n_embd"],     cfg["n_embd"], bias=cfg["bias"])
+        self.w1 = nn.Linear(cfg["embed_dim"], 2 * cfg["embed_dim"], bias=cfg["bias"])
+        self.w2 = nn.Linear(   cfg["embed_dim"],     cfg["embed_dim"], bias=cfg["bias"])
         self.drop = nn.Dropout(cfg["dropout"])
     def forward(self, x):
         x, gate = self.w1(x).chunk(2, dim=-1)
@@ -78,9 +78,9 @@ class Block(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        self.ln1 = LayerNorm(cfg["n_embd"], bias=cfg["bias"])
+        self.ln1 = LayerNorm(cfg["embed_dim"], bias=cfg["bias"])
         self.att = CausalSelfAttention(cfg)
-        self.ln2 = LayerNorm(cfg["n_embd"], bias=cfg["bias"])
+        self.ln2 = LayerNorm(cfg["embed_dim"], bias=cfg["bias"])
         self.mlp = MLP(cfg)
 
     def forward(self, x):

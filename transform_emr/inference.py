@@ -2,10 +2,12 @@ import torch
 from torch.nn import functional as F
 import pandas as pd
 from tqdm import tqdm
-from config.dataset_config import OUTCOMES, TERMINAL_OUTCOMES
-from config.model_config import TRANSFORMER_CHECKPOINT, EMBEDDER_CHECKPOINT, MODEL_CONFIG
-from transformer import GPT
-from embedding import EMREmbedding
+
+# ───────── local code ─────────────────────────────────────────────────── #
+from transform_emr.config.dataset_config import OUTCOMES, TERMINAL_OUTCOMES
+from transform_emr.config.model_config import TRANSFORMER_CHECKPOINT, EMBEDDER_CHECKPOINT, MODEL_CONFIG
+from transform_emr.transformer import GPT
+from transform_emr.embedding import EMREmbedding
 
 
 def load_transformer(model_config=None):
@@ -15,7 +17,7 @@ def load_transformer(model_config=None):
         vocab_size=model_config["vocab_size"],
         ctx_dim=model_config["ctx_dim"],
         time2vec_dim=model_config["time2vec_dim"],
-        embed_dim=model_config["n_embd"]
+        embed_dim=model_config["embed_dim"]
     )
 
     model = GPT(model_config, dummy_embedder, use_checkpoint=False)
@@ -88,7 +90,7 @@ def infer_event_stream(model, dataset, max_len=500):
     device = next(model.parameters()).device
 
     for pid in tqdm(dataset.patient_ids, desc="Generating"):
-        context_vec = dataset.context_df.loc[pid].unsqueeze(0).to(device)  # [1, ctx_dim]
+        context_vec = torch.tensor(dataset.context_df.loc[pid].values, dtype=torch.float32).unsqueeze(0).to(device)  # [1, ctx_dim]
 
         # Start with [CTX] token
         token_seq = torch.tensor([[ctx_token]], dtype=torch.long, device=device)  # [1, 1]
@@ -148,3 +150,29 @@ def infer_event_stream(model, dataset, max_len=500):
             steps += 1
 
     return pd.DataFrame(rows)
+
+
+# if __name__ == "__main__":
+#     from transform_emr.dataset import EMRDataset
+#     import joblib
+#     from pathlib import Path
+#     from transform_emr.config.dataset_config import TEST_TEMPORAL_DATA_FILE, TEST_CTX_DATA_FILE
+    
+#     # Load test data
+#     df = pd.read_csv(TEST_TEMPORAL_DATA_FILE)
+#     ctx_df = pd.read_csv(TEST_CTX_DATA_FILE)
+    
+#     # Load scaler from the checkpoint directory
+#     scaler_path = Path(EMBEDDER_CHECKPOINT).resolve().parent / "scaler.pkl"
+#     scaler = joblib.load(scaler_path)
+    
+#     # Create dataset using the same scaler
+#     dataset = EMRDataset(df, ctx_df, scaler=scaler)
+
+#     # Load model
+#     model = load_transformer(MODEL_CONFIG)
+#     model.eval()
+
+#     # Run inference
+#     result_df = infer_event_stream(model, dataset, OUTCOMES, TERMINAL_OUTCOMES, max_len=500)
+#     result_df.to_csv('inferance_on_test.csv', index=False)

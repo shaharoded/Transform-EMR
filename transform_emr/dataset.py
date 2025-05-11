@@ -4,7 +4,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
 # ───────── local code ─────────────────────────────────────────────────── #
-from config.dataset_config import *
+from transform_emr.config.dataset_config import *
 
 
 class EMRDataset(Dataset):
@@ -28,8 +28,8 @@ class EMRDataset(Dataset):
         self.context_df.loc[:, :] = self.scaler.fit_transform(self.context_df.values)
 
         # Normalize time
-        df['StartDateTime'] = pd.to_datetime(df['StartDateTime'], dayfirst=True)
-        df['EndDateTime'] = pd.to_datetime(df['EndDateTime'], dayfirst=True)
+        df['StartDateTime'] = pd.to_datetime(df['StartDateTime'], format='mixed')
+        df['EndDateTime'] = pd.to_datetime(df['EndDateTime'], format='mixed')
         df['VisitStart'] = df.groupby('PatientID')['StartDateTime'].transform('min')
         df['RelStartTime'] = (df['StartDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
         df['RelEndTime'] = (df['EndDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
@@ -148,21 +148,3 @@ def collate_emr(batch, pad_token_id=0):
         'context_vec': context_vectors,
         'targets': padded_token_ids.clone()
     }
-
-
-# Local env tests:
-if __name__ == "__main__":
-    
-    # Initiate dataset from files
-    temporal_df = pd.read_csv(TEMPORAL_DATA_FILE)
-    ctx_df = pd.read_csv(CTX_DATA_FILE)
-
-
-    dataset = EMRDataset(df=temporal_df, patient_context_df=ctx_df)
-    print('Number of Patients: ', len(dataset))
-    print('Total Number of Records: ', len(dataset.tokens_df))
-    print(dataset.tokens_df.head())
-
-    # Get first patient's sample
-    first_sample = dataset[0]
-    print('First Patient Context Vector:', first_sample['context_vec'])
