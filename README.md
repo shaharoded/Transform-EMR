@@ -8,6 +8,10 @@ This model is a part of my thesis and will be used on actual EMR data, stored in
 event-prediction-in-diabetes-care/
 │
 ├── transform_emr/           # Core Python package
+│   ├── config/              # Configuration modules
+│   │   ├── dataset_config.py
+│   │   └── model_config.py
+│   │
 │   ├── dataset.py           # Data preprocessing logic
 │   ├── embedding.py         # Embedding model (EMREmbedding)
 │   ├── transformer.py       # Transformer architecture
@@ -15,14 +19,14 @@ event-prediction-in-diabetes-care/
 │   ├── inference.py         # Inference pipeline
 │   └── utils.py             # Utility functions
 │
-├── config/                    # Configuration modules
-│
 ├── data/                      # External data folder (for synthetic or real EMR)
 │   ├── train/
 │   └── test/
 │
 ├── tests/                     # Unit and integration tests
 │
+├── .gitignore
+├── requirements.txt
 ├── setup.py
 └── README.md
 ```
