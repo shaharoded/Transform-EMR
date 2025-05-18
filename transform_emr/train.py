@@ -21,6 +21,49 @@ from transform_emr.utils import plot_losses
 from transform_emr.config.model_config import MODEL_CONFIG, TRAINING_SETTINGS, TRANSFORMER_CHECKPOINT
 from transform_emr.config.dataset_config import TRAIN_TEMPORAL_DATA_FILE, TRAIN_CTX_DATA_FILE
 
+def summarize_patient_data_split(train_ds, val_ds, train_ctx, val_ctx, train_ids, val_ids):
+    """
+    Prints summary statistics about your train/val split:
+    - Patient counts
+    - Record counts
+    - Context shapes
+    - Event count per patient (min/max/avg)
+    - Token coverage
+    """
+
+    print("✅ Data Split Summary")
+    print(f"  - Train patients: {len(train_ids)}")
+    print(f"  - Val patients:   {len(val_ids)}")
+
+    print(f"  - Train records:  {len(train_ds.tokens_df):,}")
+    print(f"  - Val records:    {len(val_ds.tokens_df):,}")
+
+    print(f"  - Train context shape: {train_ctx.shape}")
+    print(f"  - Val context shape:   {val_ctx.shape}")
+
+    # Per-patient record count stats
+    train_counts = train_ds.tokens_df.groupby('PatientID').size()
+    val_counts = val_ds.tokens_df.groupby('PatientID').size()
+
+    print(f"\n📊 Train patient records:")
+    print(f"  - Min:  {train_counts.min()}")
+    print(f"  - Max:  {train_counts.max()}")
+    print(f"  - Mean: {train_counts.mean():.1f}")
+    print(f"  - Median: {train_counts.median()}")
+
+    print(f"\n📊 Val patient records:")
+    print(f"  - Min:  {val_counts.min()}")
+    print(f"  - Max:  {val_counts.max()}")
+    print(f"  - Mean: {val_counts.mean():.1f}")
+    print(f"  - Median: {val_counts.median()}")
+
+    # Token coverage
+    train_tokens = train_ds.tokens_df['ConceptName'].nunique()
+    val_tokens = val_ds.tokens_df['ConceptName'].nunique()
+    print(f"\n🧠 Unique ConceptName tokens:")
+    print(f"  - Train: {train_tokens}")
+    print(f"  - Val:   {val_tokens}")
+
 
 def prepare_data():
     print(f"[Pre-processing]: Building dataset...")
@@ -34,7 +77,9 @@ def prepare_data():
     train_ctx, val_ctx = ctx_df[ctx_df.PatientID.isin(train_ids)], ctx_df[ctx_df.PatientID.isin(val_ids)]
 
     train_ds = EMRDataset(train_df, train_ctx)
-    val_ds   = EMRDataset(val_df,  val_ctx, scaler=train_ds.scaler)    
+    val_ds   = EMRDataset(val_df,  val_ctx, scaler=train_ds.scaler)
+    summarize_patient_data_split(train_ds, val_ds, train_ctx, val_ctx, train_ids, val_ids)   
+
     MODEL_CONFIG['vocab_size'] = len(set(train_ds.token2id.keys()) | set(val_ds.token2id.keys())) # Dinamically updating vocab
     MODEL_CONFIG['ctx_dim'] = train_ds.context_df.shape[1] # Dinamically updating shape
 

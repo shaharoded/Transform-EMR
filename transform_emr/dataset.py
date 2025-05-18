@@ -21,6 +21,10 @@ class EMRDataset(Dataset):
             self.patient_groups (Dict): {pid: DataFrame} -> A sub-DataFrame containing the records of 1 patient as value
             self.token2id (Dict): token -> ID mapper.
         """
+        # Input validation
+        df, patient_context_df = self._validate_and_align_inputs(df, patient_context_df)
+        
+        # Set context
         self.context_df = patient_context_df.set_index("PatientID").astype("float32")
         
         # Fit scaler and transform context features
@@ -28,8 +32,6 @@ class EMRDataset(Dataset):
         self.context_df.loc[:, :] = self.scaler.fit_transform(self.context_df.values)
 
         # Normalize time
-        df['StartDateTime'] = pd.to_datetime(df['StartDateTime'], format='mixed')
-        df['EndDateTime'] = pd.to_datetime(df['EndDateTime'], format='mixed')
         df['VisitStart'] = df.groupby('PatientID')['StartDateTime'].transform('min')
         df['RelStartTime'] = (df['StartDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
         df['RelEndTime'] = (df['EndDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
@@ -54,6 +56,53 @@ class EMRDataset(Dataset):
         self.patient_ids = self.tokens_df['PatientID'].unique()
         self.patient_groups = {pid: self.tokens_df[self.tokens_df['PatientID'] == pid] for pid in self.patient_ids}
 
+    def _validate_and_align_inputs(self, df, patient_context_df):
+        """
+        Validates required columns, datetime types, and aligns PatientIDs between
+        temporal (df) and context (patient_context_df) data.
+
+        Returns:
+            Tuple of (cleaned_df, cleaned_patient_context_df)
+        """
+
+        # 1. Required columns check
+        required_columns = ['PatientID', 'ConceptName', 'StartDateTime', 'EndDateTime', 'Value']
+        for col in required_columns:
+            if col not in df.columns:
+                raise ValueError(f"Missing required column: {col}")
+
+        # 2. Check datetime dtypes
+        if not pd.api.types.is_datetime64_any_dtype(df['StartDateTime']):
+            raise TypeError("StartDateTime column must be of datetime64[ns] dtype.")
+        if not pd.api.types.is_datetime64_any_dtype(df['EndDateTime']):
+            raise TypeError("EndDateTime column must be of datetime64[ns] dtype.")
+
+        # 3. Handle duplicate PatientIDs in context
+        dupe_counts = patient_context_df['PatientID'].value_counts()
+        duplicates = dupe_counts[dupe_counts > 1]
+        if not duplicates.empty:
+            print(f"Found {len(duplicates)} PatientIDs with duplicate rows in context_df. Aggregating by max value...")
+            patient_context_df = patient_context_df.groupby('PatientID').max().reset_index()
+
+        # 4. Align temporal and context data
+        temporal_ids = set(df['PatientID'])
+        context_ids = set(patient_context_df['PatientID'])
+        shared_ids = temporal_ids & context_ids
+
+        if len(shared_ids) < len(temporal_ids) or len(shared_ids) < len(context_ids):
+            print(f"Dropping unmatched PatientIDs:")
+            print(f"   - {len(temporal_ids - shared_ids)} from temporal data")
+            print(f"   - {len(context_ids - shared_ids)} from context data")
+
+            df = df[df['PatientID'].isin(shared_ids)].copy()
+            patient_context_df = patient_context_df[patient_context_df['PatientID'].isin(shared_ids)].copy()
+
+        # 5. Final integrity checks
+        assert patient_context_df['PatientID'].is_unique, "PatientID must be unique in context_df after aggregation"
+        assert set(df['PatientID']) == set(patient_context_df['PatientID']), "Mismatched PatientIDs after filtering"
+
+        return df, patient_context_df
+    
     def _expand_tokens(self, df, min_state_duration_sec=1):
         rows = []
         for _, row in df.iterrows():

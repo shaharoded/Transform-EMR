@@ -1,8 +1,9 @@
 # Ignore specific files
-
+emr_model.zip
 
 # Ignore an entire folder
 venv/
 __pycache__/
 checkpoints/
 images/
+transform_emr_temp/

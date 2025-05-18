@@ -39,11 +39,9 @@ Install the project as an editable package from the **root** directory:
 
 ```bash
 pip install -e .
-```
 
-```python
-from transform_emr.dataset import EMRDataset
-from transform_emr.train import run_two_phase_training
+# Ensure your working directory is properly set to the root repo of this project
+# Be sure to set the path in your local env properly.
 ```
 
 ---
@@ -55,16 +53,17 @@ from transform_emr.train import run_two_phase_training
 ```python
 import pandas as pd
 from transform_emr.dataset import EMRDataset
-from transform_emr.config import dataset_config, model_config
+from transform_emr.config.dataset_config import *
+from transform_emr.config.model_config import *
 
-# Load data
-df = pd.read_csv(dataset_config.TRAIN_TEMPORAL_DATA_FILE)
-ctx_df = pd.read_csv(dataset_config.TRAIN_CTX_DATA_FILE)
+# Load data (verify you paths are properly defined)
+df = pd.read_csv(TRAIN_TEMPORAL_DATA_FILE, low_memory=False)
+ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE, low_memory=False)
 
 # Initialize dataset and update config dynamically
 ds = EMRDataset(df, ctx_df)
-model_config.MODEL_CONFIG["vocab_size"] = len(ds.token2id)
-model_config.MODEL_CONFIG["ctx_dim"] = ds.context_df.shape[1]
+MODEL_CONFIG["vocab_size"] = len(ds.token2id)
+MODEL_CONFIG["ctx_dim"] = ds.context_df.shape[1]
 ```
 
 ### 2. Train Model

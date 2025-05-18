@@ -11,6 +11,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 
 # ───────── local code ─────────────────────────────────────────────────── #
 from transform_emr.embedding import EMREmbedding
@@ -46,19 +47,30 @@ class CausalSelfAttention(nn.Module):
             torch.tril(torch.ones(cfg["block_size"], cfg["block_size"]))
             .view(1, 1, cfg["block_size"], cfg["block_size"])
         )
-
+    def _scaled_dot_product_attention(self, q, k, v, mask=None):
+        d_k = q.size(-1)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, float('-inf'))
+        attn_weights = F.softmax(scores, dim=-1)
+        return torch.matmul(attn_weights, v)
+    
     def forward(self, x):
         B, T, C = x.shape
         qkv = self.qkv(x).view(B, T, self.n_head, 3 * (C // self.n_head))
         q, k, v = qkv.chunk(3, dim=-1)   # (B, T, h, d)
 
-        # PyTorch 2.1 scaled‑dot‑product attention (fuses softmax + matmul)
-        attn = F.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=None,
-            dropout_p=self.attn_dropout.p if self.training else 0.0,
-            is_causal=True
-        )
+        # PyTorch 2.1 optimized attention OR fallback
+        if hasattr(F, "scaled_dot_product_attention"):
+            attn = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=None,
+                dropout_p=self.attn_dropout.p if self.training else 0.0,
+                is_causal=True
+            )
+        else:
+            attn = self._scaled_dot_product_attention(q, k, v)
+            
         y = self.proj(attn.reshape(B, T, C))
         return self.resid_dropout(y)
 
@@ -132,8 +144,11 @@ class GPT(nn.Module):
         print(f"[GPT]: Total params: {self.get_num_params()/1e6:.2f} M")
         
         if cfg.get("compile", False):
-            print("[GPT]: Compiling model with torch.compile()")
-            self = torch.compile(self)
+            if hasattr(torch, "compile"):
+                print("[GPT]: Compiling model with torch.compile()")
+                self = torch.compile(self)
+            else:
+                print("[GPT]: torch.compile() is not available in this PyTorch version. Skipping.")
 
     # -------------------------------------------------------- helpers ------- #
     def _init_weights(self, module):
@@ -187,7 +202,7 @@ class GPT(nn.Module):
         x = self.drop(self.embedder(token_ids, time_deltas, context_vec, return_mask=False))  # (B, T+1, D)
         for blk in self.blocks:
             if self.training and self.use_checkpoint:
-                x = torch.utils.checkpoint.checkpoint(_forward, blk, x, use_reentrant=False)
+                x = checkpoint.checkpoint(_forward, blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         logits = self.lm_head(self.ln_f(x))                                # (B, T+1, V)

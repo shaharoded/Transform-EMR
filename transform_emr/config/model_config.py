@@ -33,8 +33,8 @@ TRAINING_SETTINGS = {
     "phase1_n_epochs": 500,
     "phase2_n_epochs": 50,
     "patience": 5,
-    "phase1_learning_rate": 1e-2,
+    "phase1_learning_rate": 5e-4,
     "phase2_learning_rate": 3e-4,
     "weight_decay": 1e-3,
-    "batch_size": 4, # Number of patients processed concurrently
+    "batch_size": 8, # Number of patients processed concurrently
 }

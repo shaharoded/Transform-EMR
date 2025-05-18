@@ -41,8 +41,8 @@ def test_embedder_token_embedding():
 @pytest.mark.order(5)
 def test_inference_on_test_data():
     # Load test data
-    df = pd.read_csv(TEST_TEMPORAL_DATA_FILE)
-    ctx_df = pd.read_csv(TEST_CTX_DATA_FILE)
+    df = pd.read_csv(TEST_TEMPORAL_DATA_FILE, low_memory=False)
+    ctx_df = pd.read_csv(TEST_CTX_DATA_FILE, low_memory=False)
     
     # Load scaler from the checkpoint directory
     scaler_path = Path(EMBEDDER_CHECKPOINT).resolve().parent / "scaler.pkl"

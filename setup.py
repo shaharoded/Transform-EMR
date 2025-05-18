@@ -5,7 +5,7 @@ setup(
     version='0.1',
     packages=find_packages(),
     install_requires=[
-        "torch>=2.0",
+        "torch>=1.13.1",
         "pandas",
         "numpy",
         "scikit-learn",
