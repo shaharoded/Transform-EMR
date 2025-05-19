@@ -57,10 +57,14 @@ from transform_emr.config.dataset_config import *
 from transform_emr.config.model_config import *
 
 # Load data (verify you paths are properly defined)
-df = pd.read_csv(TRAIN_TEMPORAL_DATA_FILE, low_memory=False)
+temporal_df = pd.read_csv(TRAIN_TEMPORAL_DATA_FILE, low_memory=False)
 ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE, low_memory=False)
 
-# Initialize dataset and update config dynamically
+# You'll need to verify your temporal_df
+# - Already has all the columns ['PatientID', 'ConceptName', 'Value', 'StartDateTime', 'EndDateTime']
+# - Dates are in date-time (datetime64[ns]) format
+
+# Initialize dataset and update config dynamically (based on the training set)
 ds = EMRDataset(df, ctx_df)
 MODEL_CONFIG["vocab_size"] = len(ds.token2id)
 MODEL_CONFIG["ctx_dim"] = ds.context_df.shape[1]
@@ -74,10 +78,52 @@ run_two_phase_training()
 ```
 
 Model checkpoints and scaler are saved under `checkpoints/phase1/` and `checkpoints/phase2/`.
+You can also split this part to it's components, running the prepare_data(), phase_one(), phase_two() seperatly,
+but you'll need to adjust the imports. Use `train.py` structure for that.
 
+### 3. Inference from the Model
+
+```python
+import joblib
+from pathlib import Path
+from pandas import pd
+
+# Load data (verify you paths are properly defined)
+temporal_df = pd.read_csv(TEST_TEMPORAL_DATA_FILE, low_memory=False)
+ctx_df = pd.read_csv(TEST_CTX_DATA_FILE, low_memory=False)
+
+# You'll need to verify your temporal_df
+# - Already has all the columns ['PatientID', 'ConceptName', 'Value', 'StartDateTime', 'EndDateTime']
+# - Dates are in date-time (datetime64[ns]) format
+
+# These should be updates from the training Dataset, or updated here manually:
+MODEL_CONFIG["vocab_size"] = ...
+MODEL_CONFIG["ctx_dim"] = ...
+
+# Load scaler
+scaler_path = Path(EMBEDDER_CHECKPOINT).resolve.parent / "scaler.pkl"
+scaler = joblib.load(scaler_path)
+
+# Create the test dataset (cut input after k days for inference)
+K=5 # Example for number of days you want as input
+ds = EMRDataset(df, ctx_df, scaler=scaler, max_input_days=K)
+
+# Load model
+model = load_transformer()
+model.eval()
+
+results_df = infer_event_stream(model, ds, max_len=500)
+```
+
+This results_df will include both input events and generated events and will have these columns:
+{"PatientID", "Step", "Token", "IsInput", "IsOutcome", "IsTerminal"}
+
+You can analize the model's performance by comparing the input (full input) to the output (not directly)
+ - Were all complications generated?
+ - Were all complications generated on time? (use MEAL tokens to infer the time a model designated for an event)
 ---
 
-## 🧪 Running Tests
+## 🧪 Running Unit-Tests
 
 Run all tests:
 
