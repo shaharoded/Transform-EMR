@@ -22,6 +22,11 @@ def test_embedder_token_embedding():
     # Load test dataset to access vocabulary
     df = pd.read_csv(TEST_TEMPORAL_DATA_FILE)
     ctx_df = pd.read_csv(TEST_CTX_DATA_FILE)
+    df['StartDateTime'] = pd.to_datetime(df['StartTime'], utc=True, errors='raise')
+    df['StartDateTime'] = df['StartDateTime'].dt.tz_convert(None)
+    df['EndDateTime'] = pd.to_datetime(df['EndTime'], utc=True, errors='raise')
+    df['EndDateTime'] = df['EndDateTime'].dt.tz_convert(None)
+    df.drop(columns=["StartTime", "EndTime"], inplace=True)
     dataset = EMRDataset(df, ctx_df, scaler=scaler)
 
     # Inject token2id into embedder (if not already present)
