@@ -70,7 +70,7 @@ class CausalSelfAttention(nn.Module):
             )
         else:
             attn = self._scaled_dot_product_attention(q, k, v)
-            
+
         y = self.proj(attn.reshape(B, T, C))
         return self.resid_dropout(y)
 
@@ -171,20 +171,28 @@ class GPT(nn.Module):
 
     def configure_optimizers(self, weight_decay, learning_rate, betas):
         """
-        Purpose:
-        Separates parameters into:
-            decay: Typically weights (matrices).
-            no_decay: Biases, LayerNorm weights — we don't apply weight decay here to preserve their stability.
+        Configures the optimizer:
+        - Applies weight decay to transformer weights (dim ≥ 2)
+        - No weight decay on biases / norms
+        - Applies same LR everywhere, but scales embedder LR by 0.1
         """
+        embedder_params = list(self.embedder.parameters())
+        embedder_param_ids = set(id(p) for p in embedder_params)
+
         decay, no_decay = [], []
+
         for n, p in self.named_parameters():
-            if not p.requires_grad:
-                continue
+            if not p.requires_grad or id(p) in embedder_param_ids:
+                continue  # Embedder handled separately
             (decay if p.dim() >= 2 else no_decay).append(p)
-        return torch.optim.AdamW(
-            [{"params": decay,    "weight_decay": weight_decay},
-             {"params": no_decay, "weight_decay": 0.0}],
-            lr=learning_rate, betas=betas)
+
+        optim_groups = [
+            {"params": decay, "weight_decay": weight_decay, "lr": learning_rate},
+            {"params": no_decay, "weight_decay": 0.0, "lr": learning_rate},
+            {"params": embedder_params, "weight_decay": 0.0, "lr": learning_rate * 0.1}
+        ]
+
+        return torch.optim.AdamW(optim_groups, betas=betas)
 
     # ---------------------------------------------------- forward & loss ---- #
     def forward(self, token_ids, time_deltas, context_vec=None, targets=None):

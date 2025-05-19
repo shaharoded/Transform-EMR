@@ -8,10 +8,13 @@ from transform_emr.config.dataset_config import *
 
 
 class EMRDataset(Dataset):
-    def __init__(self, df, patient_context_df, scaler=None):
+    def __init__(self, df, patient_context_df, scaler=None, max_input_days=None):
         """
         df: original DataFrame with columns ['PatientID', 'ConceptName', 'StartDateTime', 'EndDateTime', 'Value']
-        patient_context_df: DataFrame with columns ['PatientID'] + context_columns
+        patient_context_df: DataFrame with columns ['PatientID'] + context_columns.
+        max_input_days: For test dataset - will truncate the input temporal records after |max_input_days| days.
+
+        This class performs data cleaning, as well as prperation of data for input as train of for inference as test.
 
         Attr:
             self.scaler (sklearn.preprocessing.StandardScaler): Used to scale the ctx vector. Can be inputed externally for validation/testing.
@@ -23,6 +26,7 @@ class EMRDataset(Dataset):
         """
         # Input validation
         df, patient_context_df = self._validate_and_align_inputs(df, patient_context_df)
+        df = self._truncate_after_terminal_event(df)
         
         # Set context
         self.context_df = patient_context_df.set_index("PatientID").astype("float32")
@@ -35,6 +39,9 @@ class EMRDataset(Dataset):
         df['VisitStart'] = df.groupby('PatientID')['StartDateTime'].transform('min')
         df['RelStartTime'] = (df['StartDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
         df['RelEndTime'] = (df['EndDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
+
+        if max_input_days:
+            df = self._cut_after_k_days(df, max_input_days)
 
         # Expand tokens
         self.tokens_df = self._expand_tokens(df)
@@ -102,6 +109,38 @@ class EMRDataset(Dataset):
         assert set(df['PatientID']) == set(patient_context_df['PatientID']), "Mismatched PatientIDs after filtering"
 
         return df, patient_context_df
+    
+    def _truncate_after_terminal_event(self, df):
+        """
+        For each patient, drop any records that occur after the first terminal event.
+        """
+        def truncate_group(group):
+            group = group.sort_values("StartDateTime")
+            terminal_idx = group[group["ConceptName"].isin(TERMINAL_OUTCOMES)].index
+            if not terminal_idx.empty:
+                first_terminal_time = group.loc[terminal_idx[0], "StartDateTime"]
+                return group[group["StartDateTime"] <= first_terminal_time]
+            return group
+
+        df = df.groupby("PatientID", group_keys=False).apply(
+            lambda group: truncate_group(group)
+        )
+        return df
+    
+    def _cut_after_k_days(self, df, k):
+        """
+        Trims patient timelines to only include events within the first `k` days from admission.
+        Drops patients whose entire stay is <= k days (nothing to predict beyond that).
+        """
+        # Keep events where start is within k days
+        df = df[df['RelStartTime'] <= k].copy()
+
+        # Drop patients where we cut the entire timeline (no prediction to do)
+        full_counts = df.groupby('PatientID').size()
+        valid_ids = full_counts[full_counts > 1].index  # Keep patients with >1 event
+        df = df[df['PatientID'].isin(valid_ids)].copy()
+
+        return df
     
     def _expand_tokens(self, df, min_state_duration_sec=1):
         rows = []

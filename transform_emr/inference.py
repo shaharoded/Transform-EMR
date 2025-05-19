@@ -60,7 +60,6 @@ def get_token_embedding(embedder, token: str) -> torch.Tensor:
     embedding = embedder.token_embed.weight[token_id].detach()
     return embedding
 
-
 def infer_event_stream(model, dataset, max_len=500):
     """
     Generates a stream of events for each patient in the dataset.

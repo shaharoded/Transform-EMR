@@ -184,8 +184,7 @@ def train_embedder(embedder, train_loader, val_loader, resume=True, scaler=None)
     # ----- Loss and optimizer -----
     loss_fn = nn.CrossEntropyLoss(ignore_index=embedder.padding_idx)
     optimizer = torch.optim.AdamW(embedder.parameters(), 
-                                  lr=TRAINING_SETTINGS.get('phase1_learning_rate'),
-                                  weight_decay=TRAINING_SETTINGS.get('weight_decay'))
+                                  lr=TRAINING_SETTINGS.get('phase1_learning_rate'))
     
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6
