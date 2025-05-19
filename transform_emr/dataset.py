@@ -35,8 +35,11 @@ class EMRDataset(Dataset):
         self.scaler = scaler if scaler else StandardScaler()
         self.context_df.loc[:, :] = self.scaler.fit_transform(self.context_df.values)
 
-        # Normalize time
-        df['VisitStart'] = df.groupby('PatientID')['StartDateTime'].transform('min')
+        # Normalize time (based on admission)
+        df["IsAdmission"] = df["ConceptName"] == ADMISSION_TOKEN
+        df["VisitCounter"] = df.groupby("PatientID")["IsAdmission"].cumsum()
+        df["VisitID"] = df["PatientID"].astype(str) + "_" + df["VisitCounter"].astype(str)
+        df['VisitStart'] = df.groupby('VisitID')['StartDateTime'].transform('min')
         df['RelStartTime'] = (df['StartDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
         df['RelEndTime'] = (df['EndDateTime'] - df['VisitStart']).dt.total_seconds() / 86400
 
@@ -66,7 +69,7 @@ class EMRDataset(Dataset):
     def _validate_and_align_inputs(self, df, patient_context_df):
         """
         Validates required columns, datetime types, and aligns PatientIDs between
-        temporal (df) and context (patient_context_df) data.
+        temporal (df) and context (patient_context_df) data. Will also sort the temporal data.
 
         Returns:
             Tuple of (cleaned_df, cleaned_patient_context_df)
@@ -108,7 +111,7 @@ class EMRDataset(Dataset):
         assert patient_context_df['PatientID'].is_unique, "PatientID must be unique in context_df after aggregation"
         assert set(df['PatientID']) == set(patient_context_df['PatientID']), "Mismatched PatientIDs after filtering"
 
-        return df, patient_context_df
+        return df.sort_values(["PatientID", "StartDateTime"]).copy(), patient_context_df
     
     def _truncate_after_terminal_event(self, df):
         """
@@ -127,18 +130,24 @@ class EMRDataset(Dataset):
         )
         return df
     
-    def _cut_after_k_days(self, df, k):
+    def _cut_after_k_days(self, df, k_days):
         """
         Trims patient timelines to only include events within the first `k` days from admission.
-        Drops patients whose entire stay is <= k days (nothing to predict beyond that).
+        Drops patients whose entire stay is <= k+1 days (nothing to predict beyond that).
         """
-        # Keep events where start is within k days
-        df = df[df['RelStartTime'] <= k].copy()
+        k_minutes = k_days * 1440
 
-        # Drop patients where we cut the entire timeline (no prediction to do)
-        full_counts = df.groupby('PatientID').size()
-        valid_ids = full_counts[full_counts > 1].index  # Keep patients with >1 event
-        df = df[df['PatientID'].isin(valid_ids)].copy()
+        # Keep only visits with at least k+1 minutes
+        visit_durations = df.groupby("VisitID")["RelStartTime"].max()
+        eligible_visits = visit_durations[visit_durations > k_minutes].index
+        df = df[df["VisitID"].isin(eligible_visits)].copy()
+
+        # Cut timeline to first k minutes of visit
+        df = df[df["RelStartTime"] <= k_minutes].copy()
+
+        # Drop visits with 1 or fewer records
+        visit_counts = df.groupby("VisitID").size()
+        df = df[df["VisitID"].isin(visit_counts[visit_counts > 1].index)]
 
         return df
     
