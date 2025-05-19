@@ -189,7 +189,7 @@ class GPT(nn.Module):
         optim_groups = [
             {"params": decay, "weight_decay": weight_decay, "lr": learning_rate},
             {"params": no_decay, "weight_decay": 0.0, "lr": learning_rate},
-            {"params": embedder_params, "weight_decay": 0.0, "lr": learning_rate * 0.1}
+            {"params": embedder_params, "weight_decay": 0.0, "lr": learning_rate * 0.1} # Lower LR for embedder tweaks
         ]
 
         return torch.optim.AdamW(optim_groups, betas=betas)

@@ -38,9 +38,6 @@ def summarize_patient_data_split(train_ds, val_ds, train_ctx, val_ctx, train_ids
     print(f"  - Train records:  {len(train_ds.tokens_df):,}")
     print(f"  - Val records:    {len(val_ds.tokens_df):,}")
 
-    print(f"  - Train context shape: {train_ctx.shape}")
-    print(f"  - Val context shape:   {val_ctx.shape}")
-
     # Per-patient record count stats
     train_counts = train_ds.tokens_df.groupby('PatientID').size()
     val_counts = val_ds.tokens_df.groupby('PatientID').size()
@@ -57,18 +54,16 @@ def summarize_patient_data_split(train_ds, val_ds, train_ctx, val_ctx, train_ids
     print(f"  - Mean: {val_counts.mean():.1f}")
     print(f"  - Median: {val_counts.median()}")
 
-    # Token coverage
-    train_tokens = train_ds.tokens_df['ConceptName'].nunique()
-    val_tokens = val_ds.tokens_df['ConceptName'].nunique()
-    print(f"\n🧠 Unique ConceptName tokens:")
-    print(f"  - Train: {train_tokens}")
-    print(f"  - Val:   {val_tokens}")
-
 
 def prepare_data():
     print(f"[Pre-processing]: Building dataset...")
     temporal_df = pd.read_csv(TRAIN_TEMPORAL_DATA_FILE)
     ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE)
+    temporal_df['StartDateTime'] = pd.to_datetime(temporal_df['StartTime'], utc=True, errors='raise')
+    temporal_df['StartDateTime'] = temporal_df['StartDateTime'].dt.tz_convert(None)
+    temporal_df['EndDateTime'] = pd.to_datetime(temporal_df['EndTime'], utc=True, errors='raise')
+    temporal_df['EndDateTime'] = temporal_df['EndDateTime'].dt.tz_convert(None)
+    temporal_df.drop(columns=["StartTime", "EndTime"], inplace=True)
     pids = temporal_df["PatientID"].unique()
     train_ids, val_ids = train_test_split(pids, test_size=0.2, random_state=42)
 

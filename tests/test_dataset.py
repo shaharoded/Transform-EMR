@@ -9,6 +9,11 @@ import pytest
 def test_dataset_initialization():
     df = pd.read_csv(TRAIN_TEMPORAL_DATA_FILE)
     ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE)
+    df['StartDateTime'] = pd.to_datetime(df['StartTime'], utc=True, errors='raise')
+    df['StartDateTime'] = df['StartDateTime'].dt.tz_convert(None)
+    df['EndDateTime'] = pd.to_datetime(df['EndTime'], utc=True, errors='raise')
+    df['EndDateTime'] = df['EndDateTime'].dt.tz_convert(None)
+    df.drop(columns=["StartTime", "EndTime"], inplace=True)
     ds = EMRDataset(df, ctx_df)
     MODEL_CONFIG['vocab_size'] = len(set(ds.token2id.keys())) # Dinamically updating vocab size
     MODEL_CONFIG['ctx_dim'] = ds.context_df.shape[1] # Dinamically updating shape
