@@ -103,7 +103,7 @@ def phase_one(train_dl, val_dl, embedder, resume=True, scaler=None, token_weight
         token2id=token2id
     )
 
-def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
+def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True, token_weights=None):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if not tune_embedder:
@@ -114,7 +114,7 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
 
     assert MODEL_CONFIG.get("embed_dim") == embedder.output_dim
 
-    model = GPT(MODEL_CONFIG, embedder).to(device)
+    model = GPT(MODEL_CONFIG, embedder=embedder, token_weights=token_weights).to(device)
 
     # AdamW with weight decay
     optimizer = model.configure_optimizers(
@@ -156,8 +156,12 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
             for batch in tqdm(loader, desc="Training" if train_flag else "Validation", leave=False):
                 batch = {k: v.to(device) for k, v in batch.items()}
                 _, loss = model(
-                    token_ids=batch["token_ids"],
-                    time_deltas=batch["time_deltas"],
+                    raw_concept_ids=batch["raw_concept_ids"],
+                    concept_ids=batch["concept_ids"],
+                    value_ids=batch["value_ids"],
+                    position_ids=batch["position_ids"],
+                    delta_ts=batch["delta_ts"],
+                    abs_ts=batch["abs_ts"],
                     context_vec=batch["context_vec"],
                     targets=batch["targets"]
                 )
@@ -220,7 +224,7 @@ def run_two_phase_training():
     embedder, _, _ = phase_one(train_dl, val_dl, embedder, resume=True, scaler=scaler, token_weights=weights, token2id=token2id)
 
     # Phase 2: continues with the best embedder
-    phase_two(train_dl, val_dl, embedder, resume=True)
+    phase_two(train_dl, val_dl, embedder, resume=True, token_weights=weights)
 
 
 
@@ -240,5 +244,5 @@ if __name__ == "__main__":
     # Phase 1: will resume from ckpt internally if exists
     embedder, _, _ = phase_one(train_dl, val_dl, embedder, resume=True, scaler=scaler, token_weights=weights, token2id=token2id)
 
-    # # Phase 2: continues with the best embedder
-    # phase_two(train_dl, val_dl, embedder, resume=True)
+    # Phase 2: continues with the best embedder
+    phase_two(train_dl, val_dl, embedder, resume=True)

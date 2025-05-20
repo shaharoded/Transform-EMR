@@ -105,7 +105,7 @@ class Block(nn.Module):
 # ───────── the GPT wrapper that consumes EMREmbedding ─────────────────────── #
 class GPT(nn.Module):
     """
-    GPT‑style decoder that takes an *external* EMREmbedding instead of its own
+    GPT-style decoder that takes an *external* EMREmbedding instead of its own
     token/positional embeddings.
 
     The model learns the contextual connections between events in the EMR, and generates a
@@ -113,11 +113,14 @@ class GPT(nn.Module):
 
     Parameters
     ----------
-    cfg       : dict – hyper‑parameters (block_size, n_layer, n_head, dropout, ...)
-    embedder  : EMREmbedding – fully initialised shared embedding module
+    cfg            : dict - hyper-parameters (block_size, n_layer, n_head, dropout, ...)
+    embedder       : EMREmbedding - fully initialised shared embedding module
+    token_weights  : torch.Tensor - tokens weight (importance) matrix, based on a predefined logic, if exists.
+    use_checkpoint : bool - continue training from last checkpoint
     """
 
-    def __init__(self, cfg: dict, embedder: EMREmbedding, use_checkpoint: bool=True):
+    def __init__(self, cfg: dict, embedder: EMREmbedding, 
+                 token_weights: torch.Tensor=torch.ones, use_checkpoint: bool=True):
         super().__init__()
 
         assert cfg["embed_dim"] == embedder.output_dim, (
@@ -126,6 +129,7 @@ class GPT(nn.Module):
 
         self.cfg      = cfg
         self.embedder = embedder
+        self.token_weights = token_weights
         self.use_checkpoint = use_checkpoint
 
         self.drop = nn.Dropout(cfg["dropout"])
@@ -195,25 +199,31 @@ class GPT(nn.Module):
         return torch.optim.AdamW(optim_groups, betas=betas)
 
     # ---------------------------------------------------- forward & loss ---- #
-    def forward(self, token_ids, time_deltas, context_vec=None, targets=None):
+    def forward(self, raw_concept_ids, concept_ids, value_ids, position_ids,
+            delta_ts, abs_ts, context_vec=None, targets=None):
         """
         All tensors come straight from `collate_emr`:
-            token_ids (torch.Tensor)   – padded token ids, (B, T)
-            time_deltas (torch.Tensor) – relative start times (days), (B, T)
-            context_vec (torch.Tensor) – age/gender or [] if not used, (B, C)
-            targets (torch.Tensor)     – same size as token_ids (for next‑token loss), (B, T)
+            raw_concept_ids (torch.Tensor)   - padded raw_concept ids, (B, T)
+            concept_ids (torch.Tensor)       - padded concepts ids, (B, T)
+            value_ids (torch.Tensor)         - padded concept_value ids, (B, T)
+            position_ids (torch.Tensor)      - padded token ids, (B, T)
+            delta_ts (torch.Tensor)          - relative start times from last event (hours), (B, T)
+            abs_ts (torch.Tensor)            - relative start times from ADMISSION (hours), (B, T)
+            context_vec (torch.Tensor)       - age/gender or [] if not used, (B, C)
+            targets (torch.Tensor)           - same size as token_ids (for next-token loss), (B, T)
         """
         def _forward(block, x):
             """Allows gradient checkpointing on blocks -> Memory efficient"""
             return block(x)
         
-        x = self.drop(self.embedder(token_ids, time_deltas, context_vec, return_mask=False))  # (B, T+1, D)
+        x = self.drop(self.embedder(raw_concept_ids, concept_ids, value_ids, position_ids,
+            delta_ts, abs_ts, context_vec, return_mask=False))  # (B, T+1, D)
         for blk in self.blocks:
             if self.training and self.use_checkpoint:
                 x = checkpoint.checkpoint(_forward, blk, x, use_reentrant=False)
             else:
                 x = blk(x)
-        logits = self.lm_head(self.ln_f(x))                                # (B, T+1, V)
+        logits = self.lm_head(self.ln_f(x))                     # (B, T+1, V)
 
         loss = None
         if targets is not None:
@@ -221,6 +231,7 @@ class GPT(nn.Module):
             loss = F.cross_entropy(
                 logits[:, :-1].reshape(-1, logits.size(-1)),
                 targets.reshape(-1),
-                ignore_index=self.embedder.padding_idx
+                ignore_index=self.embedder.padding_idx,
+                weight=self.token_weights
             )
         return logits, loss

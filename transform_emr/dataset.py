@@ -107,7 +107,7 @@ class EMRDataset(Dataset):
         # Boost MEAL tokens moderately
         for tok in self.token2id:
             if "MEAL" in tok:
-                self.token_weights[self.token2id[tok]] = 2.0
+                self.token_weights[self.token2id[tok]] = 3.0
 
         # Boost interval tokens (START/END)
         for tok in self.token2id:
