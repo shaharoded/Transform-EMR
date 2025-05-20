@@ -224,7 +224,7 @@ Per-patient Event Tokenization (with normalized timestamps)
 |---------------------|--------------------------------------------------------------------------------------------------|
 | `EMRDataset`        | Converts raw EMR tables into per-patient token sequences with relative time.                     |
 | `_expand_tokens()`  | Generates CONCEPT_VALUE_(START/END) or single tokens from events. Tokenizing using (START/END) for time intervals allows to capture the length of an event (TIRP - a state or trend).                         |
-| `collate_emr()`     | Pads sequences and returns tensors: `token_ids`, `time_deltas`, and fixed-length context vector. |
+| `collate_emr()`     | Pads sequences and returns tensors|
 
 📌 **Why it matters:**  
 Medical data varies in density and structure across patients. This dynamic preprocessing handles irregularity while preserving medically-relevant sequencing via `START/END` logic and relative timing.
@@ -271,3 +271,5 @@ Once the EMR structure is captured, the transformer learns to model sequential d
 
 ## 📚 Citation
 Inspired by recent advancements in temporal deep learning, sequence modeling in healthcare (BEHRT, RETAIN, Med-BERT), and Time2Vec (Kazemi et al.).
+
+The training loop and embedder design are adapted from Andrej Karpathy’s minimal GPT-2 implementation (https://github.com/karpathy/nanoGPT), with modifications for multi-embedding structure and k-step prediction loss.
