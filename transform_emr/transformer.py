@@ -232,6 +232,7 @@ class GPT(nn.Module):
                 logits[:, :-1].reshape(-1, logits.size(-1)),
                 targets.reshape(-1),
                 ignore_index=self.embedder.padding_idx,
-                weight=self.token_weights
+                weight=self.token_weights,
+                label_smoothing=0.1
             )
         return logits, loss
