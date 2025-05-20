@@ -29,6 +29,8 @@ class EMRDataset(Dataset):
             self.id2concept (Dict[int, str]): Reverse mapping for concept2id.
             self.id2value (Dict[int, str]): Reverse mapping for value2id.
             self.id2token (Dict[int, str]): Reverse mapping for position2id.
+
+            self.token_weights (torch.Tensor): A token importance weights matrix for loss function
         """
         # Input validation
         df, patient_context_df = self._validate_and_align_inputs(df, patient_context_df)
@@ -82,6 +84,25 @@ class EMRDataset(Dataset):
         # Sort & compute time deltas
         self.tokens_df = self.tokens_df.sort_values(['PatientID', 'TimePoint'])
         self.tokens_df['TimeDelta'] = self.tokens_df.groupby('PatientID')['TimePoint'].diff().fillna(0)
+
+        # Token Weights (for loss function)
+        self.token_weights = torch.ones(len(self.token2id))
+
+        for outcome in OUTCOMES:
+            tok_id = self.token2id.get(outcome)
+            if tok_id is not None:
+                self.token_weights[tok_id] = 5.0
+        
+        for outcome in TERMINAL_OUTCOMES:
+            tok_id = self.token2id.get(outcome)
+            if tok_id is not None:
+                self.token_weights[tok_id] = 15.0
+
+        # Prevent learning to generate these
+        for ignore_tok in special_tokens + [ADMISSION_TOKEN]:
+            tok_id = self.position2id.get(ignore_tok)
+            if tok_id is not None:
+                self.token_weights[tok_id] = 0.0
 
         # Merge patient context
         self.patient_ids = self.tokens_df['PatientID'].unique()
