@@ -6,14 +6,14 @@ from pathlib import Path
 from transform_emr.dataset import EMRDataset
 from transform_emr.inference import load_transformer, load_embedder, infer_event_stream, get_token_embedding
 from transform_emr.config.model_config import MODEL_CONFIG, EMBEDDER_CHECKPOINT
-from transform_emr.config.dataset_config import TEST_TEMPORAL_DATA_FILE, TEST_CTX_DATA_FILE, OUTCOMES, TERMINAL_OUTCOMES
+from transform_emr.config.dataset_config import TEST_TEMPORAL_DATA_FILE, TEST_CTX_DATA_FILE
 
 import pytest
 
 @pytest.mark.order(4)
 def test_embedder_token_embedding():
     # Load trained embedder
-    embedder = load_embedder(MODEL_CONFIG)
+    embedder = load_embedder()
 
     # Load scaler
     scaler_path = Path(EMBEDDER_CHECKPOINT).resolve().parent / "scaler.pkl"
@@ -29,11 +29,8 @@ def test_embedder_token_embedding():
     df.drop(columns=["StartTime", "EndTime"], inplace=True)
     dataset = EMRDataset(df, ctx_df, scaler=scaler)
 
-    # Inject token2id into embedder (if not already present)
-    embedder.token2id = dataset.token2id
-
     # Pick an example token from the vocab
-    sample_token = next(iter(embedder.token2id))  # Get any token, e.g., "GLUCOSE_MEASURE_Low_START"
+    sample_token = next(iter(dataset.token2id))  # Get any token, e.g., "GLUCOSE_MEASURE_Low_START"
 
     # Run embedding lookup
     vec = get_token_embedding(embedder, sample_token)
@@ -48,6 +45,11 @@ def test_inference_on_test_data():
     # Load test data
     df = pd.read_csv(TEST_TEMPORAL_DATA_FILE, low_memory=False)
     ctx_df = pd.read_csv(TEST_CTX_DATA_FILE, low_memory=False)
+
+    # Convert datetime columns
+    df['StartDateTime'] = pd.to_datetime(df['StartTime'], utc=True, errors='raise').dt.tz_convert(None)
+    df['EndDateTime'] = pd.to_datetime(df['EndTime'], utc=True, errors='raise').dt.tz_convert(None)
+    df.drop(columns=["StartTime", "EndTime"], inplace=True)
     
     # Load scaler from the checkpoint directory
     scaler_path = Path(EMBEDDER_CHECKPOINT).resolve().parent / "scaler.pkl"

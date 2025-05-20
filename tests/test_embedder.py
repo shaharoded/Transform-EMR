@@ -7,6 +7,7 @@ import pytest
 @pytest.mark.order(2)
 def test_embedder_initialization():
     model = EMREmbedding(
+        raw_concept_vocab_size=MODEL_CONFIG.get("raw_concept_vocab_size"),
         concept_vocab_size=MODEL_CONFIG.get("concept_vocab_size"),
         value_vocab_size=MODEL_CONFIG.get("value_vocab_size"),
         position_vocab_size=MODEL_CONFIG.get("vocab_size"),

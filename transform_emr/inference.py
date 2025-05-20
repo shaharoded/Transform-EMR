@@ -14,12 +14,14 @@ def load_transformer(model_config=None):
     """Load the entire trained GPT model (including fine-tuned embedder) from checkpoint to CPU."""
     model_config = model_config or MODEL_CONFIG
     dummy_embedder = EMREmbedding(
-        vocab_size=model_config["vocab_size"],
-        ctx_dim=model_config["ctx_dim"],
-        time2vec_dim=model_config["time2vec_dim"],
-        embed_dim=model_config["embed_dim"]
+        raw_concept_vocab_size=MODEL_CONFIG.get("raw_concept_vocab_size"),
+        concept_vocab_size=MODEL_CONFIG.get("concept_vocab_size"),
+        value_vocab_size=MODEL_CONFIG.get("value_vocab_size"),
+        position_vocab_size=MODEL_CONFIG.get("vocab_size"),
+        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
+        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
+        embed_dim=MODEL_CONFIG.get("embed_dim")
     )
-
     model = GPT(model_config, dummy_embedder, use_checkpoint=False)
     ckpt = torch.load(TRANSFORMER_CHECKPOINT, map_location=torch.device("cpu"))
     model.load_state_dict(ckpt)
@@ -31,10 +33,13 @@ def load_embedder(model_config=None):
     """Load the trained embedder from checkpoint to CPU."""
     model_config = model_config or MODEL_CONFIG
     embedder = EMREmbedding(
-        vocab_size=model_config["vocab_size"],
-        ctx_dim=model_config["ctx_dim"],
-        time2vec_dim=model_config["time2vec_dim"],
-        embed_dim=model_config["embed_dim"]
+        raw_concept_vocab_size=MODEL_CONFIG.get("raw_concept_vocab_size"),
+        concept_vocab_size=MODEL_CONFIG.get("concept_vocab_size"),
+        value_vocab_size=MODEL_CONFIG.get("value_vocab_size"),
+        position_vocab_size=MODEL_CONFIG.get("vocab_size"),
+        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
+        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
+        embed_dim=MODEL_CONFIG.get("embed_dim")
     )
     state_dict = torch.load(EMBEDDER_CHECKPOINT, map_location=torch.device("cpu"))
     embedder.load_state_dict(state_dict)

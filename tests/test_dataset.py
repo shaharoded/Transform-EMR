@@ -19,6 +19,7 @@ def test_dataset_initialization():
     ds = EMRDataset(df, ctx_df)
 
     # Update model config to match dataset vocab
+    MODEL_CONFIG['raw_concept_vocab_size'] = len(ds.rawconcept2id)
     MODEL_CONFIG['concept_vocab_size'] = len(ds.concept2id)
     MODEL_CONFIG['value_vocab_size'] = len(ds.value2id)
     MODEL_CONFIG['vocab_size'] = len(ds.token2id)

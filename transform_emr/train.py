@@ -21,14 +21,14 @@ from transform_emr.utils import plot_losses
 from transform_emr.config.model_config import MODEL_CONFIG, TRAINING_SETTINGS, TRANSFORMER_CHECKPOINT
 from transform_emr.config.dataset_config import TRAIN_TEMPORAL_DATA_FILE, TRAIN_CTX_DATA_FILE
 
-def summarize_patient_data_split(train_ds, val_ds, train_ctx, val_ctx, train_ids, val_ids):
+def summarize_patient_data_split(train_ds, val_ds, train_ids, val_ids):
     """
     Prints summary statistics about your train/val split:
     - Patient counts
     - Record counts
     - Context shapes
     - Event count per patient (min/max/avg)
-    - Token coverage
+    - Token coverage (raw, concept, value, position)
     """
 
     print("✅ Data Split Summary")
@@ -43,16 +43,23 @@ def summarize_patient_data_split(train_ds, val_ds, train_ctx, val_ctx, train_ids
     val_counts = val_ds.tokens_df.groupby('PatientID').size()
 
     print(f"\n📊 Train patient records:")
-    print(f"  - Min:  {train_counts.min()}")
-    print(f"  - Max:  {train_counts.max()}")
-    print(f"  - Mean: {train_counts.mean():.1f}")
-    print(f"  - Median: {train_counts.median()}")
+    print(f"  - Min:     {train_counts.min()}")
+    print(f"  - Max:     {train_counts.max()}")
+    print(f"  - Mean:    {train_counts.mean():.1f}")
+    print(f"  - Median:  {train_counts.median()}")
 
     print(f"\n📊 Val patient records:")
-    print(f"  - Min:  {val_counts.min()}")
-    print(f"  - Max:  {val_counts.max()}")
-    print(f"  - Mean: {val_counts.mean():.1f}")
-    print(f"  - Median: {val_counts.median()}")
+    print(f"  - Min:     {val_counts.min()}")
+    print(f"  - Max:     {val_counts.max()}")
+    print(f"  - Mean:    {val_counts.mean():.1f}")
+    print(f"  - Median:  {val_counts.median()}")
+
+    # Token vocab sizes
+    print(f"\n🧠 Vocabulary sizes (train):")
+    print(f"  - Raw concepts:     {len(train_ds.rawconcept2id):,}")
+    print(f"  - Concepts:         {len(train_ds.concept2id):,}")
+    print(f"  - Concept+Value:    {len(train_ds.value2id):,}")
+    print(f"  - Full Tokens:      {len(train_ds.token2id):,}")
 
 
 def prepare_data():
@@ -73,22 +80,27 @@ def prepare_data():
 
     train_ds = EMRDataset(train_df, train_ctx)
     val_ds   = EMRDataset(val_df,  val_ctx, scaler=train_ds.scaler)
-    summarize_patient_data_split(train_ds, val_ds, train_ctx, val_ctx, train_ids, val_ids)   
+    summarize_patient_data_split(train_ds, val_ds, train_ids, val_ids)   
 
-    MODEL_CONFIG['vocab_size'] = len(set(train_ds.token2id.keys()) | set(val_ds.token2id.keys())) # Dinamically updating vocab
     MODEL_CONFIG['ctx_dim'] = train_ds.context_df.shape[1] # Dinamically updating shape
+    MODEL_CONFIG['raw_concept_vocab_size'] = len(set(train_ds.rawconcept2id.keys()) | set(val_ds.rawconcept2id.keys())) # Dinamically updating vocab
+    MODEL_CONFIG['concept_vocab_size'] = len(set(train_ds.concept2id.keys()) | set(val_ds.concept2id.keys())) # Dinamically updating vocab
+    MODEL_CONFIG['value_vocab_size'] = len(set(train_ds.value2id.keys()) | set(val_ds.value2id.keys())) # Dinamically updating vocab
+    MODEL_CONFIG['vocab_size'] = len(set(train_ds.token2id.keys()) | set(val_ds.token2id.keys())) # Dinamically updating vocab
 
     train_dl = DataLoader(train_ds, batch_size=TRAINING_SETTINGS.get('batch_size'), shuffle=True, collate_fn=collate_emr)
     val_dl   = DataLoader(val_ds,  batch_size=TRAINING_SETTINGS.get('batch_size'), shuffle=False, collate_fn=collate_emr)
-    return train_dl, val_dl, train_ds.scaler
+    return train_dl, val_dl, train_ds.scaler, train_ds.token_weights, train_ds.token2id
 
-def phase_one(train_dl, val_dl, embedder, resume=True, scaler=None):
+def phase_one(train_dl, val_dl, embedder, resume=True, scaler=None, token_weights=None, token2id={}):
     return train_embedder(
         embedder=embedder,
         train_loader=train_dl,
         val_loader=val_dl,
         resume=resume,
-        scaler=scaler
+        scaler=scaler,
+        token_weights=token_weights,
+        token2id=token2id
     )
 
 def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
@@ -143,7 +155,7 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
         with torch.set_grad_enabled(train_flag):
             for batch in tqdm(loader, desc="Training" if train_flag else "Validation", leave=False):
                 batch = {k: v.to(device) for k, v in batch.items()}
-                outputs, loss = model(
+                _, loss = model(
                     token_ids=batch["token_ids"],
                     time_deltas=batch["time_deltas"],
                     context_vec=batch["context_vec"],
@@ -192,22 +204,41 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
 
 
 def run_two_phase_training():
-    train_dl, val_dl, scaler = prepare_data()
+    train_dl, val_dl, scaler, weights, token2id = prepare_data()
 
     embedder = EMREmbedding(
-        vocab_size=MODEL_CONFIG['vocab_size'],
-        ctx_dim=MODEL_CONFIG['ctx_dim'],
-        time2vec_dim=MODEL_CONFIG.get('time2vec_dim'),
-        embed_dim=MODEL_CONFIG['embed_dim']
+        raw_concept_vocab_size=MODEL_CONFIG.get("raw_concept_vocab_size"),
+        concept_vocab_size=MODEL_CONFIG.get("concept_vocab_size"),
+        value_vocab_size=MODEL_CONFIG.get("value_vocab_size"),
+        position_vocab_size=MODEL_CONFIG.get("vocab_size"),
+        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
+        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
+        embed_dim=MODEL_CONFIG.get("embed_dim")
     )
 
     # Phase 1: will resume from ckpt internally if exists
-    embedder, _, _ = phase_one(train_dl, val_dl, embedder, resume=True, scaler=scaler)
+    embedder, _, _ = phase_one(train_dl, val_dl, embedder, resume=True, scaler=scaler, token_weights=weights, token2id=token2id)
 
     # Phase 2: continues with the best embedder
     phase_two(train_dl, val_dl, embedder, resume=True)
 
 
 
-# if __name__ == "__main__":
-#     run_two_phase_training()
+if __name__ == "__main__":
+    train_dl, val_dl, scaler, weights, token2id = prepare_data()
+
+    embedder = EMREmbedding(
+        raw_concept_vocab_size=MODEL_CONFIG.get("raw_concept_vocab_size"),
+        concept_vocab_size=MODEL_CONFIG.get("concept_vocab_size"),
+        value_vocab_size=MODEL_CONFIG.get("value_vocab_size"),
+        position_vocab_size=MODEL_CONFIG.get("vocab_size"),
+        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
+        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
+        embed_dim=MODEL_CONFIG.get("embed_dim")
+    )
+
+    # Phase 1: will resume from ckpt internally if exists
+    embedder, _, _ = phase_one(train_dl, val_dl, embedder, resume=True, scaler=scaler, token_weights=weights, token2id=token2id)
+
+    # # Phase 2: continues with the best embedder
+    # phase_two(train_dl, val_dl, embedder, resume=True)

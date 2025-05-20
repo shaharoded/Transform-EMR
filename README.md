@@ -66,6 +66,7 @@ ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE, low_memory=False)
 
 # Initialize dataset and update config dynamically (based on the training set)
 ds = EMRDataset(df, ctx_df)
+MODEL_CONFIG["raw_concept_vocab_size"] = len(ds.rawconcept2id)
 MODEL_CONFIG["concept_vocab_size"] = len(ds.concept2id)
 MODEL_CONFIG["value_vocab_size"] = len(ds.value2id)
 MODEL_CONFIG["vocab_size"] = len(ds.token2id)
@@ -99,6 +100,7 @@ ctx_df = pd.read_csv(TEST_CTX_DATA_FILE, low_memory=False)
 # - Dates are in date-time (datetime64[ns]) format
 
 # These should be updates from the training Dataset, or updated here manually:
+MODEL_CONFIG["raw_concept_vocab_size"] = ...
 MODEL_CONFIG["concept_vocab_size"] = ...
 MODEL_CONFIG["value_vocab_size"] = ...
 MODEL_CONFIG["vocab_size"] = ...
@@ -125,6 +127,16 @@ This results_df will include both input events and generated events and will hav
 You can analize the model's performance by comparing the input (full input) to the output (not directly)
  - Were all complications generated?
  - Were all complications generated on time? (use MEAL tokens to infer the time a model designated for an event)
+
+
+### 4. Using as a module
+
+You can perform local tests (not unit-tests) by activating the `.py` files, using the module as a package, as long as the file you are activating has __main__ section.
+
+For example, run this from the root:
+```bash
+python -m transform_emr.train
+```
 ---
 
 ## 🧪 Running Unit-Tests

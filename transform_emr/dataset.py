@@ -58,6 +58,7 @@ class EMRDataset(Dataset):
         self.tokens_df = self._expand_tokens(df)
 
         # Create token vocabulary
+        raw_concepts = sorted(self.tokens_df['RawConcept'].unique())
         concepts = sorted(self.tokens_df['Concept'].unique())
         values = sorted(self.tokens_df['ValueToken'].unique())
         positions = sorted(self.tokens_df['PositionToken'].unique())  # already being used
@@ -67,16 +68,19 @@ class EMRDataset(Dataset):
         positions = special_tokens + positions
 
         # Build vocab mappings
+        self.rawconcept2id = {tok: i for i, tok in enumerate(raw_concepts)}
         self.concept2id = {tok: i for i, tok in enumerate(concepts)}
         self.value2id = {tok: i for i, tok in enumerate(values)}
         self.token2id = {tok: i for i, tok in enumerate(positions)}
 
         # Reverse lookups
+        self.id2rawconcept = {v: k for k, v in self.rawconcept2id.items()}
         self.id2concept = {v: k for k, v in self.concept2id.items()}
         self.id2value = {v: k for k, v in self.value2id.items()}
         self.id2token = {v: k for k, v in self.token2id.items()}
 
         # Map onto df
+        self.tokens_df['RawConceptID'] = self.tokens_df['RawConcept'].map(self.rawconcept2id)
         self.tokens_df['ConceptID'] = self.tokens_df['Concept'].map(self.concept2id)
         self.tokens_df['ValueID'] = self.tokens_df['ValueToken'].map(self.value2id)
         self.tokens_df['PositionID'] = self.tokens_df['PositionToken'].map(self.token2id)
@@ -88,19 +92,31 @@ class EMRDataset(Dataset):
         # Token Weights (for loss function)
         self.token_weights = torch.ones(len(self.token2id))
 
+        # Boost OUTCOMES
         for outcome in OUTCOMES:
             tok_id = self.token2id.get(outcome)
             if tok_id is not None:
                 self.token_weights[tok_id] = 5.0
-        
-        for outcome in TERMINAL_OUTCOMES:
-            tok_id = self.token2id.get(outcome)
+
+        # Boost TERMINAL outcomes heavily
+        for term in TERMINAL_OUTCOMES:
+            tok_id = self.token2id.get(term)
             if tok_id is not None:
                 self.token_weights[tok_id] = 15.0
 
-        # Prevent learning to generate these
+        # Boost MEAL tokens moderately
+        for tok in self.token2id:
+            if "MEAL" in tok:
+                self.token_weights[self.token2id[tok]] = 2.0
+
+        # Boost interval tokens (START/END)
+        for tok in self.token2id:
+            if tok.endswith("_START") or tok.endswith("_END"):
+                self.token_weights[self.token2id[tok]] = 2.5
+
+        # Suppress special/control tokens
         for ignore_tok in special_tokens + [ADMISSION_TOKEN]:
-            tok_id = self.position2id.get(ignore_tok)
+            tok_id = self.token2id.get(ignore_tok)
             if tok_id is not None:
                 self.token_weights[tok_id] = 0.0
 
@@ -159,18 +175,34 @@ class EMRDataset(Dataset):
     
     def _truncate_after_terminal_event(self, df):
         """
-        For each patient, drop any records that occur after the first terminal event.
+        For each patient:
+        - Drop RELEASE_TOKEN if a DEATH_TOKEN occurs within 30 days after it.
+        - Then truncate any records after the first terminal event.
         """
-        def truncate_group(group):
-            group = group.sort_values("StartDateTime")
+
+        def process_group(group):
+            group = group.sort_values("StartDateTime").copy()
+
+            # Handle RELEASE vs DEATH conflicts
+            release_rows = group[group["ConceptName"] == RELEASE_TOKEN]
+            death_rows = group[group["ConceptName"] == DEATH_TOKEN]
+
+            if not release_rows.empty and not death_rows.empty:
+                release_time = release_rows.iloc[0]["StartDateTime"]
+                death_time = death_rows.iloc[0]["StartDateTime"]
+                # If death is within 30 days after release → drop release
+                if pd.Timedelta(0) <= (death_time - release_time) <= pd.Timedelta(days=30):
+                    group = group[group["ConceptName"] != RELEASE_TOKEN]
+
+            # Then truncate after first terminal event
             terminal_idx = group[group["ConceptName"].isin(TERMINAL_OUTCOMES)].index
             if not terminal_idx.empty:
                 first_terminal_time = group.loc[terminal_idx[0], "StartDateTime"]
-                return group[group["StartDateTime"] <= first_terminal_time]
+                group = group[group["StartDateTime"] <= first_terminal_time]
+
             return group
 
-        df = df.groupby("PatientID", group_keys=False).apply(truncate_group).reset_index(drop=True)
-
+        df = df.groupby("PatientID", group_keys=False).apply(process_group).reset_index(drop=True)
         return df
     
     def _cut_after_k_days(self, df, k_days):
@@ -202,7 +234,7 @@ class EMRDataset(Dataset):
         - Keeps instantaneous events as single tokens.
         
         Returns:
-            DataFrame with ['PatientID', 'Concept', 'ValueToken', 'PositionToken', 'TimePoint'].
+            DataFrame with ['PatientID', 'RawConcept', 'Concept', 'ValueToken', 'PositionToken', 'TimePoint'].
         """
         rows = []
         for _, row in df.iterrows():
@@ -212,6 +244,10 @@ class EMRDataset(Dataset):
             base_token = f"{row['ConceptName']}_{row['Value']}" if row['Value'] not in ("True", "TRUE") else row['ConceptName']
             concept = row['ConceptName']
             value = base_token
+            if concept.endswith(('_STATE', '_TREND')):
+                raw_concept = concept.rsplit('_', 1)[0]
+            else:
+                raw_concept = concept
             pos_tokens = []
 
             if is_state:
@@ -225,6 +261,7 @@ class EMRDataset(Dataset):
                 full_token = f"{base_token}_{pos}" if pos else base_token
                 rows.append({
                     'PatientID': row['PatientID'],
+                    'RawConcept': raw_concept,
                     'Concept': concept,
                     'ValueToken': value,
                     'PositionToken': full_token,
@@ -247,6 +284,7 @@ class EMRDataset(Dataset):
         df = self.patient_groups[pid]
 
         return {
+            "raw_concept_ids": torch.tensor(df["RawConceptID"].values, dtype=torch.long),
             "concept_ids": torch.tensor(df["ConceptID"].values, dtype=torch.long),
             "value_ids": torch.tensor(df["ValueID"].values, dtype=torch.long),
             "position_ids": torch.tensor(df["PositionID"].values, dtype=torch.long),
@@ -280,15 +318,17 @@ def collate_emr(batch, pad_token_id=0):
             out[i, :len(s)] = s
         return out
 
-    concept_ids  = pad_tensor([x['concept_ids'] for x in batch], pad_val=pad_token_id)
-    value_ids    = pad_tensor([x['value_ids'] for x in batch], pad_val=pad_token_id)
-    position_ids = pad_tensor([x['position_ids'] for x in batch], pad_val=pad_token_id)
-    delta_ts     = pad_tensor([x['delta_ts'] for x in batch], pad_val=0.0, dtype=torch.float32)
-    abs_ts       = pad_tensor([x['abs_ts'] for x in batch], pad_val=0.0, dtype=torch.float32)
+    raw_concept_ids  = pad_tensor([x['raw_concept_ids'] for x in batch], pad_val=pad_token_id)
+    concept_ids      = pad_tensor([x['concept_ids'] for x in batch], pad_val=pad_token_id)
+    value_ids        = pad_tensor([x['value_ids'] for x in batch], pad_val=pad_token_id)
+    position_ids     = pad_tensor([x['position_ids'] for x in batch], pad_val=pad_token_id)
+    delta_ts         = pad_tensor([x['delta_ts'] for x in batch], pad_val=0.0, dtype=torch.float32)
+    abs_ts           = pad_tensor([x['abs_ts'] for x in batch], pad_val=0.0, dtype=torch.float32)
 
     context_vecs = torch.stack([x['context_vec'] for x in batch])
 
     return {
+        'raw_concept_ids': raw_concept_ids,
         'concept_ids': concept_ids,
         'value_ids': value_ids,
         'position_ids': position_ids,  # targets
