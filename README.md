@@ -66,6 +66,8 @@ ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE, low_memory=False)
 
 # Initialize dataset and update config dynamically (based on the training set)
 ds = EMRDataset(df, ctx_df)
+MODEL_CONFIG["concept_vocab_size"] = len(ds.concept2id)
+MODEL_CONFIG["value_vocab_size"] = len(ds.value2id)
 MODEL_CONFIG["vocab_size"] = len(ds.token2id)
 MODEL_CONFIG["ctx_dim"] = ds.context_df.shape[1]
 ```
@@ -97,6 +99,8 @@ ctx_df = pd.read_csv(TEST_CTX_DATA_FILE, low_memory=False)
 # - Dates are in date-time (datetime64[ns]) format
 
 # These should be updates from the training Dataset, or updated here manually:
+MODEL_CONFIG["concept_vocab_size"] = ...
+MODEL_CONFIG["value_vocab_size"] = ...
 MODEL_CONFIG["vocab_size"] = ...
 MODEL_CONFIG["ctx_dim"] = ...
 
@@ -134,7 +138,7 @@ pytest tests/
 📝 If you have **not trained the model yet**, skip inference-related tests:
 
 ```bash
-pytest tests/test_dataset.py tests/test_embedder.py
+pytest tests/test_dataset.py tests/test_embedder.py tests/test_train_pipeline.py
 ```
 
 ⚠️ Inference tests assume the presence of:

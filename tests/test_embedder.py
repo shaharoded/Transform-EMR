@@ -7,10 +7,12 @@ import pytest
 @pytest.mark.order(2)
 def test_embedder_initialization():
     model = EMREmbedding(
-        vocab_size=MODEL_CONFIG["vocab_size"],
-        ctx_dim=MODEL_CONFIG["ctx_dim"],
-        time2vec_dim=MODEL_CONFIG.get("time2vec_dim", 8),
-        embed_dim=MODEL_CONFIG["embed_dim"]
+        concept_vocab_size=MODEL_CONFIG.get("concept_vocab_size"),
+        value_vocab_size=MODEL_CONFIG.get("value_vocab_size"),
+        position_vocab_size=MODEL_CONFIG.get("vocab_size"),
+        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
+        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
+        embed_dim=MODEL_CONFIG.get("embed_dim")
     )
     assert isinstance(model, torch.nn.Module)
     assert model.output_dim == MODEL_CONFIG["embed_dim"]

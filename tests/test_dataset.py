@@ -9,16 +9,23 @@ import pytest
 def test_dataset_initialization():
     df = pd.read_csv(TRAIN_TEMPORAL_DATA_FILE)
     ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE)
-    df['StartDateTime'] = pd.to_datetime(df['StartTime'], utc=True, errors='raise')
-    df['StartDateTime'] = df['StartDateTime'].dt.tz_convert(None)
-    df['EndDateTime'] = pd.to_datetime(df['EndTime'], utc=True, errors='raise')
-    df['EndDateTime'] = df['EndDateTime'].dt.tz_convert(None)
-    df.drop(columns=["StartTime", "EndTime"], inplace=True)
-    ds = EMRDataset(df, ctx_df)
-    MODEL_CONFIG['vocab_size'] = len(set(ds.token2id.keys())) # Dinamically updating vocab size
-    MODEL_CONFIG['ctx_dim'] = ds.context_df.shape[1] # Dinamically updating shape
 
-    
+    # Convert datetime columns
+    df['StartDateTime'] = pd.to_datetime(df['StartTime'], utc=True, errors='raise').dt.tz_convert(None)
+    df['EndDateTime'] = pd.to_datetime(df['EndTime'], utc=True, errors='raise').dt.tz_convert(None)
+    df.drop(columns=["StartTime", "EndTime"], inplace=True)
+
+    # Initialize dataset
+    ds = EMRDataset(df, ctx_df)
+
+    # Update model config to match dataset vocab
+    MODEL_CONFIG['concept_vocab_size'] = len(ds.concept2id)
+    MODEL_CONFIG['value_vocab_size'] = len(ds.value2id)
+    MODEL_CONFIG['vocab_size'] = len(ds.token2id)
+    MODEL_CONFIG['ctx_dim'] = ds.context_df.shape[1]
+
     assert len(ds) > 0
-    assert "TokenID" in ds.tokens_df.columns
+    assert "ConceptID" in ds.tokens_df.columns
+    assert "ValueID" in ds.tokens_df.columns
+    assert "PositionID" in ds.tokens_df.columns
     assert ds.context_df.shape[1] > 0

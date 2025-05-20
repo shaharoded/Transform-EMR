@@ -17,6 +17,8 @@ EMBEDDER_CHECKPOINT = os.path.join(PROJECT_ROOT, 'checkpoints', 'phase1', 'best_
 TRANSFORMER_CHECKPOINT = os.path.join(PROJECT_ROOT, 'checkpoints', 'phase2', 'best_model.pt')
 
 MODEL_CONFIG = {
+      "concept_vocab_size": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
+      "value_vocab_size": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
       "vocab_size": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
       "ctx_dim": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
       "time2vec_dim": 16,

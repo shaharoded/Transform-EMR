@@ -51,110 +51,152 @@ class Time2Vec(nn.Module):
 class EMREmbedding(nn.Module):
     """
     Embedding layer for electronic medical record (EMR) sequences.
-    Replaces token‑emb + positional‑emb in a Transformer.
 
-    This layer combines:
-      - token embeddings (e.g., "GLUCOSE_MEASURE_Low_START")
-      - time delta embeddings (via Time2Vec)
-      - √D scaling, dropout & LayerNorm for stability
-      - a learnable [CTX] token for patient-level context (age, gender, etc.)
+    This module creates time-aware, context-enhanced event representations suitable
+    for Transformer-based models. It replaces traditional token and positional embeddings
+    by explicitly decomposing each event into structured components:
 
-    Each event is represented by the sum of its token and time embeddings.
-    The final sequence is prepended with a context-aware [CTX] embedding.
+      - Concept ID (e.g., "GLUCOSE")
+      - Concept + Value ID (e.g., "GLUCOSE_Low")
+      - Concept + Value + Position ID (e.g., "GLUCOSE_Low_START")
+      - Relative time delta since the previous event (Δt)
+      - Absolute time since admission (t_abs)
+      - Patient-level context vector (e.g., age, sex, diagnosis group)
+
+    These components are embedded, concatenated, and projected into a shared
+    fixed-size embedding space. A special [CTX] token is prepended to each sequence
+    to incorporate patient-level context at the start of modeling.
+
+    All embeddings are regularized with dropout and normalized with LayerNorm.
 
     Args:
-        vocab_size (int): Number of unique concept-value tokens
-        ctx_dim (int): Dimension of patient context vector
-        time2vec_dim (int): Output dimension of the Time2Vec embedding
-        embed_dim (int): Final embedding size for each token/event
+        concept_vocab_size (int): Number of unique clinical concepts (e.g., "GLUCOSE", "MEAL").
+        value_vocab_size (int): Number of unique concept-value combinations (e.g., "GLUCOSE_High").
+        position_vocab_size (int): Number of unique concept-value-position combinations (e.g., "GLUCOSE_High_START").
+        ctx_dim (int): Dimensionality of the patient context vector.
+        time2vec_dim (int): Output dimension of each Time2Vec component (must be ≥ 2).
+        embed_dim (int): Final embedding size for each event.
+        dropout (float): Dropout rate applied to the combined embeddings.
 
-    Input:
-        token_ids (LongTensor): [B, T] token IDs
-        time_deltas (FloatTensor): [B, T] time since the previous event (in days)
-        patient_contexts (FloatTensor): [B, ctx_dim] patient-level context features
+    Inputs:
+        concept_ids (LongTensor): [B, T] — concept-level token IDs
+        value_ids (LongTensor): [B, T] — concept+value token IDs
+        position_ids (LongTensor): [B, T] — concept+value+position token IDs
+        delta_ts (FloatTensor): [B, T] — relative time (Δt) since previous event (in days)
+        abs_ts (FloatTensor): [B, T] — absolute time since admission (in days)
+        patient_contexts (FloatTensor): [B, ctx_dim] — per-patient non-temporal features
 
     Output:
-        embeddings (FloatTensor): [B, T+1, embed_dim] — with a [CTX] token prepended
+        embeddings (FloatTensor): [B, T+1, embed_dim] — event embeddings, prepended with [CTX]
+        (optionally) attention_mask (BoolTensor): [B, T+1] — True for real tokens, False for [PAD]
     """
 
-    def __init__(self, vocab_size, ctx_dim, time2vec_dim=8, embed_dim=128, dropout=0.1):
+    def __init__(self, concept_vocab_size, value_vocab_size, position_vocab_size, ctx_dim, 
+                 time2vec_dim=8, embed_dim=128, dropout=0.1):
         super().__init__()
 
-        # --- token & time -------------------------------------------------
+        # --- for compatibility -------------------------------------------------
         self.padding_idx = 0 # Hard coded. Should never change.
         self.scaler = None # Place holder. Will be saved during training.
-        self.token_embed = nn.Embedding(vocab_size, embed_dim, padding_idx=self.padding_idx)
-        self.time2vec = Time2Vec(time2vec_dim)
-        self.time_proj  = nn.Linear(time2vec_dim, embed_dim, bias=False)
+        self.output_dim = embed_dim  # keep public attr for compatibility
+        self.vocab_size = position_vocab_size  # keep public attr for compatibility
+
+        # --- Token-level embeddings ---
+        self.concept_embed = nn.Embedding(concept_vocab_size, embed_dim) # Embed for "GLUCOSE"
+        self.value_embed = nn.Embedding(value_vocab_size, embed_dim) # Embed for "GLUCOSE_High"
+        self.position_embed = nn.Embedding(position_vocab_size, embed_dim) # Embed for "GLUCOSE_High_Start" -> the full vocab size
+
+        # --- Time embeddings ---
+        self.time2vec_rel = Time2Vec(time2vec_dim)
+        self.time2vec_abs = Time2Vec(time2vec_dim)
+
+        # --- Time projection ---
+        time_cat_dim = 2 * time2vec_dim
+        self.time_proj = nn.Linear(time_cat_dim, embed_dim, bias=False)
 
         # --- patient‑context slot ----------------------------------------
         self.ctx_token  = nn.Parameter(torch.randn(embed_dim)) # learnable [CTX] token
         self.context_proj = nn.Linear(ctx_dim, embed_dim, bias=False)
 
+        # --- Final projection ---
+        concat_dim = 4 * embed_dim  # concept + value + pos + time
+        self.final_proj = nn.Linear(concat_dim, embed_dim)
+
         # --- regularisation ----------------------------------------------
         self.dropout = nn.Dropout(dropout)
-        self.scale   = math.sqrt(embed_dim)
+        self.scale = math.sqrt(embed_dim)
         self.layernorm = nn.LayerNorm(embed_dim)
 
-        self.output_dim = embed_dim  # keep public attr for compatibility
-        self.vocab_size = vocab_size  # keep public attr for compatibility
+        self.output_dim = embed_dim
 
         # --- Decoder tied to token embeddings ----------------------------
-        self.decoder = nn.Linear(embed_dim, vocab_size, bias=False)
-        self.decoder.weight = self.token_embed.weight  # weight tying
+        self.decoder = nn.Linear(embed_dim, position_vocab_size, bias=False)
+        self.decoder.weight = self.position_embed.weight  # weight tying
 
-    def forward(self, token_ids, time_deltas, patient_contexts, return_mask):
+
+    def forward(self, concept_ids, value_ids, position_ids,
+                delta_ts, abs_ts, patient_contexts, return_mask=False):
         """
-        process a full patient’s event stream in one shot.
+        Build time-aware event embeddings for a full sequence.
 
         Args:
-          token_ids (torch.Tensor):      [B, T] LongTensor
-          time_deltas (torch.Tensor):    [B, T]  (Δt)  FloatTensor (time since previous event)
-          patient_contexts (torch.Tensor): [B, ctx_dim] FloatTensor
-          return_mask (bool): 
+            concept_ids (LongTensor): [B, T]
+            value_ids (LongTensor):   [B, T]
+            position_ids (LongTensor):[B, T]
+            delta_ts (FloatTensor):   [B, T]
+            abs_ts (FloatTensor):     [B, T]
+            patient_contexts (FloatTensor): [B, ctx_dim]
+            return_mask (bool): Whether to return an attention mask
 
         Returns:
-            embeddings:   [B, T+1, D] FloatTensor with [CTX] prepended
-            attention_mask (optional) : BoolTensor [B, T+1]
-            True for real tokens, False for PAD
+            embeddings:   [B, T+1, D] — [CTX] prepended
+            attention_mask (optional): [B, T+1] (True for real tokens)
         """
-        # ---- look‑ups ---------------------------------------------------
-        tok_vec  = self.token_embed(token_ids)            # [B, T, D]
-        time_vec = self.time_proj(self.time2vec(time_deltas))  # [B, T, D]
+        # --- Token lookups ---
+        c_emb = self.concept_embed(concept_ids)     # [B, T, D]
+        v_emb = self.value_embed(value_ids)
+        p_emb = self.position_embed(position_ids)
 
-        ev_vec = (tok_vec + time_vec) / self.scale        # [B, T, D]
-        ev_vec = self.dropout(ev_vec)
+        # --- Time encoding ---
+        t_rel = self.time2vec_rel(delta_ts)         # [B, T, k]
+        t_abs = self.time2vec_abs(abs_ts)
+        t_cat = torch.cat([t_rel, t_abs], dim=-1)   # [B, T, 2k]
+        t_emb = self.time_proj(t_cat)               # [B, T, D]
 
-        # ---- [CTX] slot -------------------------------------------------
+        # --- Combine all token-wise pieces ---
+        combined = torch.cat([c_emb, v_emb, p_emb, t_emb], dim=-1)  # [B, T, 4D]
+        ev_vec = self.final_proj(combined)                          # [B, T, D]
+        ev_vec = self.dropout(ev_vec) / self.scale                 # [B, 1, D]
+
+        # --- [CTX] slot ---
         ctx_vec = self.ctx_token + self.context_proj(patient_contexts)  # [B, D]
-        ctx_vec = ctx_vec.unsqueeze(1)                    # [B, 1, D]
+        ctx_vec = ctx_vec.unsqueeze(1)                                  # [B, 1, D]
 
-        seq = torch.cat([ctx_vec, ev_vec], dim=1)         # [B, T+1, D]
+        seq = torch.cat([ctx_vec, ev_vec], dim=1)                       # [B, T+1, D]
         seq = self.layernorm(seq)
 
         if return_mask:
-            pad_mask = (token_ids != self.token_embed.padding_idx)
-            pad_mask = torch.cat(
-                [torch.ones_like(pad_mask[:, :1]), pad_mask], dim=1
-            )  # prepend 1 for [CTX]
+            pad_mask = (position_ids != self.padding_idx)
+            pad_mask = torch.cat([torch.ones_like(pad_mask[:, :1]), pad_mask], dim=1)
             return seq, pad_mask
 
         return seq
     
-    def forward_with_decoder(self, token_ids, time_deltas, patient_contexts):
+    def forward_with_decoder(self, concept_ids, value_ids, position_ids,
+                            delta_ts, abs_ts, patient_contexts):
         """
-        Runs the full forward pass with decoding (for solo training)
-
-        Args:
-            token_ids: [B, T]
-            time_deltas: [B, T]
-            patient_contexts: [B, ctx_dim]
+        Runs full forward pass + decoding (for training phase 1).
 
         Returns:
-            logits: [B, T, vocab_size] — predicted next-token scores
+            logits: [B, T, vocab_size] — scores for next-token prediction
         """
-        seq = self.forward(token_ids, time_deltas, patient_contexts, return_mask=False)  # [B, T+1, D]
-        return self.decoder(seq[:, :-1, :])  # remove [CTX] for prediction
+        seq = self.forward(
+            concept_ids, value_ids, position_ids,
+            delta_ts, abs_ts, patient_contexts,
+            return_mask=False
+        )  # [B, T+1, D]
+
+        return self.decoder(seq[:, :-1, :])  # Predict next token at each step
 
 
 def train_embedder(embedder, train_loader, val_loader, resume=True, scaler=None):
