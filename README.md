@@ -268,3 +268,7 @@ Once the EMR structure is captured, the transformer learns to model sequential d
 Inspired by recent advancements in temporal deep learning, sequence modeling in healthcare (BEHRT, RETAIN, Med-BERT), and Time2Vec (Kazemi et al.).
 
 The training loop and embedder design are adapted from Andrej Karpathy’s minimal GPT-2 implementation (https://github.com/karpathy/nanoGPT), with modifications for multi-embedding structure and k-step prediction loss.
+
+
+## TO-DO
+ - Transformer generation is currently assuming time progress by 1 hour between every 2 events. A seperate model can and should predict the relevant time between events to provide better positioning between events. This will also solve the "when" issue for predicted events.

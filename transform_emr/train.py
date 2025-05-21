@@ -212,6 +212,7 @@ def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
         # Save latest
         torch.save({
             "model_state": model.state_dict(),
+            "embedder_state": model.embedder.state_dict(),
             "model_config": MODEL_CONFIG,
             "epoch": epoch,
             "optim_state": optimizer.state_dict(),
