@@ -7,23 +7,24 @@ This model is a part of my thesis and will be used on actual EMR data, stored in
 ```bash
 event-prediction-in-diabetes-care/
 │
-├── transform_emr/           # Core Python package
-│   ├── config/              # Configuration modules
+├── transform_emr/                     # Core Python package
+│   ├── config/                        # Configuration modules
 │   │   ├── dataset_config.py
 │   │   └── model_config.py
 │   │
-│   ├── dataset.py           # Dataset, DataPreprocess and Tokenizer
-│   ├── embedding.py         # Embedding model (EMREmbedding)
-│   ├── transformer.py       # Transformer architecture
-│   ├── train.py             # Training logic
-│   ├── inference.py         # Inference pipeline
-│   └── utils.py             # Utility functions
+│   ├── dataset.py                     # Dataset, DataPreprocess and Tokenizer
+│   ├── embedding.py                   # Embedding model (EMREmbedding)
+│   ├── transformer.py                 # Transformer architecture
+│   ├── train.py                       # Training logic
+│   ├── inference.py                   # Inference pipeline
+│   └── utils.py                       # Utility functions
 │
-├── data/                    # External data folder (for synthetic or real EMR)
+├── data/                              # External data folder (for synthetic or real EMR)
+│   ├── generate_synthetic_data.ipynb  # A notebook that generates synthetic data similar in structure to original
 │   ├── train/
 │   └── test/
 │
-├── tests/                   # Unit and integration tests
+├── tests/                             # Unit and integration tests
 │
 ├── .gitignore
 ├── requirements.txt
