@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 
 # ───────── local code ─────────────────────────────────────────────────── #
-from transform_emr.embedding import EMREmbedding
+from transform_emr.embedder import EMREmbedding
 
 # ───────── helpers ─────────────────────────────────────────────────────────── #
 class LayerNorm(nn.Module):
@@ -115,12 +115,10 @@ class GPT(nn.Module):
     ----------
     cfg            : dict - hyper-parameters (block_size, n_layer, n_head, dropout, ...)
     embedder       : EMREmbedding - fully initialised shared embedding module
-    token_weights  : torch.Tensor - tokens weight (importance) matrix, based on a predefined logic, if exists.
     use_checkpoint : bool - continue training from last checkpoint
     """
 
-    def __init__(self, cfg: dict, embedder: EMREmbedding, 
-                 token_weights: torch.Tensor=torch.ones, use_checkpoint: bool=True):
+    def __init__(self, cfg: dict, embedder: EMREmbedding, use_checkpoint: bool=True):
         super().__init__()
 
         assert cfg["embed_dim"] == embedder.output_dim, (
@@ -129,15 +127,31 @@ class GPT(nn.Module):
 
         self.cfg      = cfg
         self.embedder = embedder
-        self.token_weights = token_weights
         self.use_checkpoint = use_checkpoint
 
+        # ─── Sanity checks ─────────────────────────────────────────────────────────────
+        actual_vocab_size = self.embedder.position_embed.num_embeddings
+        assert self.cfg["vocab_size"] == actual_vocab_size, (
+            f"[GPT] Vocab size mismatch: cfg['vocab_size']={self.cfg['vocab_size']} "
+            f"but embedder.position_embed has {actual_vocab_size} embeddings"
+        )
+
+        assert hasattr(self.embedder, "id2token"), "[GPT] Embedder missing id2token map"
+        assert len(self.embedder.id2token) == actual_vocab_size, (
+            f"[GPT] id2token size mismatch: got {len(self.embedder.id2token)}, expected {actual_vocab_size}"
+        )
+
+        # ─── Build layers ─────────────────────────────────────────────────────────────
         self.drop = nn.Dropout(cfg["dropout"])
         self.blocks = nn.ModuleList([Block(cfg) for _ in range(cfg["n_layer"])])
         self.ln_f  = LayerNorm(cfg["embed_dim"], bias=cfg["bias"])
 
         self.lm_head = nn.Linear(cfg["embed_dim"], cfg["vocab_size"], bias=False)
-        self.lm_head.weight = self.embedder.token_embed.weight  # weight tying
+        self.lm_head.weight = self.embedder.position_embed.weight  # weight tying
+        assert self.lm_head.weight.shape[0] == actual_vocab_size, (
+            f"[GPT] lm_head output dim ({self.lm_head.weight.shape[0]}) "
+            f"does not match embedder.position_embed ({actual_vocab_size})"
+        )
 
         self.apply(self._init_weights)
         # slightly smaller init for res projections as in gpt‑2
@@ -153,6 +167,7 @@ class GPT(nn.Module):
                 self = torch.compile(self)
             else:
                 print("[GPT]: torch.compile() is not available in this PyTorch version. Skipping.")
+        
 
     # -------------------------------------------------------- helpers ------- #
     def _init_weights(self, module):
@@ -225,14 +240,4 @@ class GPT(nn.Module):
                 x = blk(x)
         logits = self.lm_head(self.ln_f(x))                     # (B, T+1, V)
 
-        loss = None
-        if targets is not None:
-            # Skip [CTX] token (first position) when computing language‑model loss
-            loss = F.cross_entropy(
-                logits[:, :-1].reshape(-1, logits.size(-1)),
-                targets.reshape(-1),
-                ignore_index=self.embedder.padding_idx,
-                weight=self.token_weights,
-                label_smoothing=0.1
-            )
-        return logits, loss
+        return logits  # loss is computed in train.py

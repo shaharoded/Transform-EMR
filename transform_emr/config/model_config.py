@@ -13,14 +13,11 @@ import os
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # Checkpoint paths
-EMBEDDER_CHECKPOINT = os.path.join(PROJECT_ROOT, 'checkpoints', 'phase1', 'best_embedder.pt')
-TRANSFORMER_CHECKPOINT = os.path.join(PROJECT_ROOT, 'checkpoints', 'phase2', 'best_model.pt')
+CHECKPOINT_PATH = os.path.join(PROJECT_ROOT, 'checkpoints')
+EMBEDDER_CHECKPOINT = os.path.join(CHECKPOINT_PATH, 'phase1', 'best_embedder.pt')
+TRANSFORMER_CHECKPOINT = os.path.join(CHECKPOINT_PATH, 'phase2', 'best_model.pt')
 
 MODEL_CONFIG = {
-      "raw_concept_vocab_size": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
-      "concept_vocab_size": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
-      "value_vocab_size": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
-      "vocab_size": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
       "ctx_dim": 0, # A place holder to fill after creating the dataset. Adjust value post-training before deploying.
       "time2vec_dim": 16,
       "embed_dim": 256,
@@ -33,11 +30,12 @@ MODEL_CONFIG = {
     }
 
 TRAINING_SETTINGS = {
-    "phase1_n_epochs": 500,
+    "phase1_n_epochs": 1,
     "phase2_n_epochs": 50,
-    "patience": 5,
+    "patience": 0,
     "phase1_learning_rate": 5e-4,
     "phase2_learning_rate": 3e-4,
     "weight_decay": 1e-3,
     "batch_size": 8, # Number of patients processed concurrently
+    "k_window": 5, # For soft targets per token on BCE loss, number of next tokens to predict jointly.
 }

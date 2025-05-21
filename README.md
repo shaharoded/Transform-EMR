@@ -12,18 +12,18 @@ event-prediction-in-diabetes-care/
 │   │   ├── dataset_config.py
 │   │   └── model_config.py
 │   │
-│   ├── dataset.py           # Data preprocessing logic
+│   ├── dataset.py           # Dataset, DataPreprocess and Tokenizer
 │   ├── embedding.py         # Embedding model (EMREmbedding)
 │   ├── transformer.py       # Transformer architecture
 │   ├── train.py             # Training logic
 │   ├── inference.py         # Inference pipeline
 │   └── utils.py             # Utility functions
 │
-├── data/                      # External data folder (for synthetic or real EMR)
+├── data/                    # External data folder (for synthetic or real EMR)
 │   ├── train/
 │   └── test/
 │
-├── tests/                     # Unit and integration tests
+├── tests/                   # Unit and integration tests
 │
 ├── .gitignore
 ├── requirements.txt
@@ -58,19 +58,15 @@ from transform_emr.config.model_config import *
 
 # Load data (verify you paths are properly defined)
 temporal_df = pd.read_csv(TRAIN_TEMPORAL_DATA_FILE, low_memory=False)
-ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE, low_memory=False)
+ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE)
 
-# You'll need to verify your temporal_df
-# - Already has all the columns ['PatientID', 'ConceptName', 'Value', 'StartDateTime', 'EndDateTime']
-# - Dates are in date-time (datetime64[ns]) format
+print(f"[Pre-processing]: Building tokenizer...")
+processor = DataProcessor(temporal_df, ctx_df, scaler=None)
+temporal_df, ctx_df = processor.run()
 
-# Initialize dataset and update config dynamically (based on the training set)
-ds = EMRDataset(df, ctx_df)
-MODEL_CONFIG["raw_concept_vocab_size"] = len(ds.rawconcept2id)
-MODEL_CONFIG["concept_vocab_size"] = len(ds.concept2id)
-MODEL_CONFIG["value_vocab_size"] = len(ds.value2id)
-MODEL_CONFIG["vocab_size"] = len(ds.token2id)
-MODEL_CONFIG["ctx_dim"] = ds.context_df.shape[1]
+tokenizer = EMRTokenizer.from_processed_df(temporal_df)
+train_ds = EMRDataset(train_df, train_ctx, tokenizer=tokenizer)
+MODEL_CONFIG['ctx_dim'] = train_ds.context_df.shape[1] # Dinamically updating shape
 ```
 
 ### 2. Train Model
@@ -87,35 +83,33 @@ but you'll need to adjust the imports. Use `train.py` structure for that.
 ### 3. Inference from the Model
 
 ```python
+import pandas as pd
 import joblib
 from pathlib import Path
-from pandas import pd
 
-# Load data (verify you paths are properly defined)
-temporal_df = pd.read_csv(TEST_TEMPORAL_DATA_FILE, low_memory=False)
-ctx_df = pd.read_csv(TEST_CTX_DATA_FILE, low_memory=False)
+from transform_emr.config.dataset_config import *
+from transform_emr.config.model_config import *
+from transform_emr.dataset import DataProcessor, EMRTokenizer, EMRDataset
 
-# You'll need to verify your temporal_df
-# - Already has all the columns ['PatientID', 'ConceptName', 'Value', 'StartDateTime', 'EndDateTime']
-# - Dates are in date-time (datetime64[ns]) format
+df = pd.read_csv(TEST_TEMPORAL_DATA_FILE, low_memory=False)
+ctx_df = pd.read_csv(TEST_CTX_DATA_FILE)
 
-# These should be updates from the training Dataset, or updated here manually:
-MODEL_CONFIG["raw_concept_vocab_size"] = ...
-MODEL_CONFIG["concept_vocab_size"] = ...
-MODEL_CONFIG["value_vocab_size"] = ...
-MODEL_CONFIG["vocab_size"] = ...
+# Load scaler and tokenizer
+scaler = joblib.load(Path(CHECKPOINT_PATH) / "scaler.pkl")
+tokenizer = EMRTokenizer.load(Path(CHECKPOINT_PATH) / "tokenizer.pt")
+
+# Run processing
+processor = DataProcessor(df, ctx_df, scaler=scaler, max_input_days=5)
+df, ctx_df = processor.run()
+
+# Create dataset
+dataset = EMRDataset(df, ctx_df, tokenizer=tokenizer)
+
+# This should be updates from the training Dataset, or updated here manually:
 MODEL_CONFIG["ctx_dim"] = ...
 
-# Load scaler
-scaler_path = Path(EMBEDDER_CHECKPOINT).resolve.parent / "scaler.pkl"
-scaler = joblib.load(scaler_path)
-
-# Create the test dataset (cut input after k days for inference)
-K=5 # Example for number of days you want as input
-ds = EMRDataset(df, ctx_df, scaler=scaler, max_input_days=K)
-
 # Load model
-model = load_transformer()
+model = load_transformer() # Handles the loading of the embedder as well
 model.eval()
 
 results_df = infer_event_stream(model, ds, max_len=500)
@@ -231,7 +225,7 @@ Medical data varies in density and structure across patients. This dynamic prepr
 
 ---
 
-### 2. **`embedding.py`** – EMR Representation Learning
+### 2. **`embedder.py`** – EMR Representation Learning
 
 | Component           | Role                                                                                              |
 |--------------------|---------------------------------------------------------------------------------------------------|

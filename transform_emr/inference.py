@@ -2,49 +2,66 @@ import torch
 from torch.nn import functional as F
 import pandas as pd
 from tqdm import tqdm
+import joblib
+from pathlib import Path
 
 # ───────── local code ─────────────────────────────────────────────────── #
-from transform_emr.config.dataset_config import OUTCOMES, TERMINAL_OUTCOMES
-from transform_emr.config.model_config import TRANSFORMER_CHECKPOINT, EMBEDDER_CHECKPOINT, MODEL_CONFIG
+from transform_emr.config.dataset_config import *
+from transform_emr.config.model_config import *
 from transform_emr.transformer import GPT
-from transform_emr.embedding import EMREmbedding
+from transform_emr.embedder import EMREmbedding
+from transform_emr.dataset import DataProcessor, EMRTokenizer, EMRDataset
 
 
-def load_transformer(model_config=None):
-    """Load the entire trained GPT model (including fine-tuned embedder) from checkpoint to CPU."""
-    model_config = model_config or MODEL_CONFIG
-    dummy_embedder = EMREmbedding(
-        raw_concept_vocab_size=MODEL_CONFIG.get("raw_concept_vocab_size"),
-        concept_vocab_size=MODEL_CONFIG.get("concept_vocab_size"),
-        value_vocab_size=MODEL_CONFIG.get("value_vocab_size"),
-        position_vocab_size=MODEL_CONFIG.get("vocab_size"),
-        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
-        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
-        embed_dim=MODEL_CONFIG.get("embed_dim")
+def load_test_data(max_input_days=5):
+    df = pd.read_csv(TEST_TEMPORAL_DATA_FILE, low_memory=False)
+    ctx_df = pd.read_csv(TEST_CTX_DATA_FILE)
+
+    # Load scaler and tokenizer
+    scaler = joblib.load(Path(CHECKPOINT_PATH) / "scaler.pkl")
+    tokenizer = EMRTokenizer.load(Path(CHECKPOINT_PATH) / "tokenizer.pt")
+
+    # Run processing
+    processor = DataProcessor(df, ctx_df, scaler=scaler, max_input_days=max_input_days)
+    df, ctx_df = processor.run()
+
+    # Create dataset
+    dataset = EMRDataset(df, ctx_df, tokenizer=tokenizer)
+    return dataset
+
+
+def load_embedder(checkpoint_path=EMBEDDER_CHECKPOINT):
+    """Load the trained embedder with full config, weights, and scaler from checkpoint."""
+    ckpt = torch.load(checkpoint_path, map_location=torch.device("cpu"))
+
+    tokenizer = EMRTokenizer.load()
+
+    embedder = EMREmbedding(
+        tokenizer=tokenizer,
+        ctx_dim=ckpt["model_config"]["ctx_dim"],
+        time2vec_dim=ckpt["model_config"]["time2vec_dim"],
+        embed_dim=ckpt["model_config"]["embed_dim"],
+        dropout=ckpt["model_config"].get("dropout", 0.1),
     )
-    model = GPT(model_config, dummy_embedder, use_checkpoint=False)
+
+    embedder.load_state_dict(ckpt["model_state"])
+    embedder.eval()
+
+    return embedder
+
+
+
+def load_transformer():
+    """Load full transformer model including fine-tuned embedder state."""
+    embedder = load_embedder()  # Includes all internal state (scaler, token2id, etc.)
+
     ckpt = torch.load(TRANSFORMER_CHECKPOINT, map_location=torch.device("cpu"))
-    model.load_state_dict(ckpt)
+    model_config = ckpt.get("model_config", MODEL_CONFIG)
+    
+    model = GPT(model_config, embedder, use_checkpoint=False)
+    model.load_state_dict(ckpt["model_state"])
     model.eval()
     return model
-
-
-def load_embedder(model_config=None):
-    """Load the trained embedder from checkpoint to CPU."""
-    model_config = model_config or MODEL_CONFIG
-    embedder = EMREmbedding(
-        raw_concept_vocab_size=MODEL_CONFIG.get("raw_concept_vocab_size"),
-        concept_vocab_size=MODEL_CONFIG.get("concept_vocab_size"),
-        value_vocab_size=MODEL_CONFIG.get("value_vocab_size"),
-        position_vocab_size=MODEL_CONFIG.get("vocab_size"),
-        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
-        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
-        embed_dim=MODEL_CONFIG.get("embed_dim")
-    )
-    state_dict = torch.load(EMBEDDER_CHECKPOINT, map_location=torch.device("cpu"))
-    embedder.load_state_dict(state_dict)
-    embedder.eval()
-    return embedder
 
 
 def get_token_embedding(embedder, token: str) -> torch.Tensor:
@@ -73,7 +90,7 @@ def infer_event_stream(model, dataset, max_len=500):
 
     Args:
         model: Trained GPT model (transform_emr).
-        dataset: EMRDataset object (only context and token2id needed).
+        dataset: EMRDataset object (only context and patient_groups needed).
         max_len: Max number of tokens to generate per patient (excluding input).
 
     Returns:
@@ -82,8 +99,8 @@ def infer_event_stream(model, dataset, max_len=500):
     NOTE: Before activation you need to assign the scaler from checkpoints/phase1 (training) as as input of EMRDataset
           So that you'll scale the context features the same way they were scaled during training.
     """
-    token2id = dataset.token2id
-    id2token = {v: k for k, v in token2id.items()}
+    token2id = model.embedder.tokenizer.token2id
+    id2token = model.embedder.tokenizer.id2token
     pad_token = token2id["[PAD]"]
     ctx_token = token2id["[CTX]"]
 
@@ -154,29 +171,3 @@ def infer_event_stream(model, dataset, max_len=500):
             steps += 1
 
     return pd.DataFrame(rows)
-
-
-# if __name__ == "__main__":
-#     from transform_emr.dataset import EMRDataset
-#     import joblib
-#     from pathlib import Path
-#     from transform_emr.config.dataset_config import TEST_TEMPORAL_DATA_FILE, TEST_CTX_DATA_FILE
-    
-#     # Load test data
-#     df = pd.read_csv(TEST_TEMPORAL_DATA_FILE)
-#     ctx_df = pd.read_csv(TEST_CTX_DATA_FILE)
-    
-#     # Load scaler from the checkpoint directory
-#     scaler_path = Path(EMBEDDER_CHECKPOINT).resolve().parent / "scaler.pkl"
-#     scaler = joblib.load(scaler_path)
-    
-#     # Create dataset using the same scaler
-#     dataset = EMRDataset(df, ctx_df, scaler=scaler)
-
-#     # Load model
-#     model = load_transformer(MODEL_CONFIG)
-#     model.eval()
-
-#     # Run inference
-#     result_df = infer_event_stream(model, dataset, OUTCOMES, TERMINAL_OUTCOMES, max_len=500)
-#     result_df.to_csv('inferance_on_test.csv', index=False)

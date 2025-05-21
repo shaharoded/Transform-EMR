@@ -1,12 +1,30 @@
 import os
+import numpy
 import torch
 import torch.nn as nn
+import sklearn.preprocessing
 import math
-import joblib
 from pathlib import Path
+
+torch.serialization.add_safe_globals([
+    sklearn.preprocessing.StandardScaler,
+    numpy._core.multiarray.scalar,
+    numpy._core.multiarray._reconstruct,
+    numpy.ndarray,
+    numpy.dtype,
+    numpy.dtypes.Int64DType,
+    numpy.dtypes.Float64DType,
+    numpy.float64,
+    numpy.int64,
+    numpy.int32,
+    numpy.float32,
+    numpy.bool_,
+    numpy.ufunc,
+])
 
 # ───────── local code ─────────────────────────────────────────────────── #
 from transform_emr.config.model_config import *
+from transform_emr.utils import get_multi_hot_targets
 
 
 class Time2Vec(nn.Module):
@@ -69,45 +87,32 @@ class EMREmbedding(nn.Module):
     All embeddings are regularized with dropout and normalized with LayerNorm.
 
     Args:
-        concept_vocab_size (int): Number of unique clinical concepts (e.g., "GLUCOSE", "MEAL").
-        concept_vocab_size (int): Number of unique clinical concepts (e.g., "GLUCOSE_STATE").
-        value_vocab_size (int): Number of unique concept-value combinations (e.g., "GLUCOSE_STATE_High").
-        position_vocab_size (int): Number of unique concept-value-position combinations (e.g., "GLUCOSE_STATE_High_START").
+        tokenizer (EMRTokenizer): The tokenizer object managing vocabularies and token metadata.
         ctx_dim (int): Dimensionality of the patient context vector.
         time2vec_dim (int): Output dimension of each Time2Vec component (must be ≥ 2).
         embed_dim (int): Final embedding size for each event.
         dropout (float): Dropout rate applied to the combined embeddings.
 
-    Inputs:
-        raw_ids (LongTensor): [B, T] — raw-concept-level token IDs
-        concept_ids (LongTensor): [B, T] — concept-level token IDs
-        value_ids (LongTensor): [B, T] — concept+value token IDs
-        position_ids (LongTensor): [B, T] — concept+value+position token IDs
-        delta_ts (FloatTensor): [B, T] — relative time (Δt) since previous event (in days)
-        abs_ts (FloatTensor): [B, T] — absolute time since admission (in days)
-        patient_contexts (FloatTensor): [B, ctx_dim] — per-patient non-temporal features
-
-    Output:
-        embeddings (FloatTensor): [B, T+1, embed_dim] — event embeddings, prepended with [CTX]
-        (optionally) attention_mask (BoolTensor): [B, T+1] — True for real tokens, False for [PAD]
+    Attributes:
+        tokenizer (EMRTokenizer): Stores the vocab and special token mappings.
+        decoder (nn.Linear): Tied to the position embedding for predicting next token.
+        output_dim (int): Final embedding size (matches `embed_dim`).
+        padding_idx (int): Token index reserved for padding ([PAD]).
     """
 
-    def __init__(self, raw_concept_vocab_size, concept_vocab_size, value_vocab_size, position_vocab_size, ctx_dim, 
-                 time2vec_dim=8, embed_dim=128, dropout=0.1):
+    def __init__(self, tokenizer, ctx_dim, time2vec_dim=8, embed_dim=128, dropout=0.1):
         super().__init__()
 
         # --- for compatibility -------------------------------------------------
         self.padding_idx = 0 # Hard coded. Should never change.
-        self.scaler = None # Place holder. Will be saved during training.
         self.output_dim = embed_dim  # keep public attr for compatibility
-        self.vocab_size = position_vocab_size  # keep public attr for compatibility
-        self.token2id = {} # keep public attr for compatibility
+        self.tokenizer = tokenizer # keep public attr for compatibility
 
         # --- Token-level embeddings ---
-        self.raw_concept_embed = nn.Embedding(raw_concept_vocab_size, embed_dim) # Embed for "GLUCOSE_MEASURE"
-        self.concept_embed = nn.Embedding(concept_vocab_size, embed_dim) # Embed for "GLUCOSE_MEASURE_STATE"
-        self.value_embed = nn.Embedding(value_vocab_size, embed_dim) # Embed for "GLUCOSE_MEASURE_STATE_High"
-        self.position_embed = nn.Embedding(position_vocab_size, embed_dim) # Embed for "GLUCOSE_MEASURE_STATE_High_Start" -> the full vocab size
+        self.raw_concept_embed = nn.Embedding(len(tokenizer.rawconcept2id), embed_dim) # Embed for "GLUCOSE_MEASURE"
+        self.concept_embed = nn.Embedding(len(tokenizer.concept2id), embed_dim) # Embed for "GLUCOSE_MEASURE_STATE"
+        self.value_embed = nn.Embedding(len(tokenizer.value2id), embed_dim) # Embed for "GLUCOSE_MEASURE_STATE_High"
+        self.position_embed = nn.Embedding(len(tokenizer.token2id), embed_dim) # Embed for "GLUCOSE_MEASURE_STATE_High_Start" -> the full vocab size
 
         # --- Time embeddings ---
         self.time2vec_rel = Time2Vec(time2vec_dim)
@@ -133,7 +138,7 @@ class EMREmbedding(nn.Module):
         self.output_dim = embed_dim
 
         # --- Decoder tied to token embeddings ----------------------------
-        self.decoder = nn.Linear(embed_dim, position_vocab_size, bias=False)
+        self.decoder = nn.Linear(embed_dim, len(tokenizer.token2id), bias=False)
         self.decoder.weight = self.position_embed.weight  # weight tying
 
 
@@ -204,7 +209,7 @@ class EMREmbedding(nn.Module):
         return self.decoder(seq[:, :-1, :])  # Predict next token at each step
 
 
-def train_embedder(embedder, train_loader, val_loader, resume=True, scaler=None, token_weights=None, token2id={}, window_k=5):
+def train_embedder(embedder, train_loader, val_loader, resume=True):
     """
     Trains an EMREmbedding model using weighted k-step prediction loss, to allow for a softer loss penalty.
     IDEA: The exact order of the token is not really important, only the existance of important tokens and patterns.
@@ -214,27 +219,19 @@ def train_embedder(embedder, train_loader, val_loader, resume=True, scaler=None,
         train_loader (DataLoader): Training dataloader.
         val_loader (DataLoader): Validation dataloader.
         resume (bool): Resume from last checkpoint if available.
-        scaler (StandardScaler): Context scaler to persist in checkpoint.
-        token_weights (Tensor): Per-token loss weights.
-        token2id (Dict): Mapping from token to it's ID, for inference from the embedder alone.
-        window_k (int): Number of next tokens to predict jointly.
 
     Returns:
         Tuple: (trained model, train_losses, val_losses)
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     embedder.to(device)
-    embedder.scaler = scaler
-    embedder.token2id = token2id
 
     ckpt_path = Path(EMBEDDER_CHECKPOINT).resolve()
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
     ckpt_last = ckpt_path.parent / "ckpt_last.pt"
 
     # ----- Loss & Optimizer -----
-    if token_weights is not None:
-        token_weights = token_weights.to(device)
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=token_weights)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=embedder.tokenizer.token_weights.to(device))
     optimizer = torch.optim.AdamW(embedder.parameters(), lr=TRAINING_SETTINGS["phase1_learning_rate"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-6)
 
@@ -281,7 +278,8 @@ def train_embedder(embedder, train_loader, val_loader, resume=True, scaler=None,
             )  # [B, T, V]
 
             B, T, V = logits.shape
-            multi_hot_targets = get_multi_hot_targets(position_ids, vocab_size=V, k=window_k)
+            multi_hot_targets = get_multi_hot_targets(position_ids=position_ids, padding_idx=embedder.padding_idx, 
+                                                      vocab_size=V, k=TRAINING_SETTINGS["k_window"])
             loss = loss_fn(logits, multi_hot_targets)
 
             if train:
@@ -292,23 +290,6 @@ def train_embedder(embedder, train_loader, val_loader, resume=True, scaler=None,
             total_loss += loss.item()
 
         return total_loss / len(loader)
-    
-    def get_multi_hot_targets(position_ids, vocab_size, k):
-        """
-        For each timestep t, mark all tokens in [t+1, t+k] in a multi-hot vector.
-        """
-        B, T = position_ids.shape
-        targets = torch.zeros((B, T, vocab_size), dtype=torch.float32, device=position_ids.device)
-
-        for step in range(1, k + 1):
-            if T - step <= 0:
-                continue
-            for b in range(B):
-                for t in range(T - step):
-                    token = position_ids[b, t + step].item()
-                    if token != embedder.padding_idx:
-                        targets[b, t, token] = 1.0
-        return targets
 
     # ----- Training loop -----
     for epoch in range(start_epoch, TRAINING_SETTINGS["phase1_n_epochs"] + 1):
@@ -328,6 +309,7 @@ def train_embedder(embedder, train_loader, val_loader, resume=True, scaler=None,
             "optim_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
             "best_val": best_val,
+            "tokenizer": embedder.tokenizer,
         }, ckpt_last)
 
         # Save best model
@@ -340,6 +322,4 @@ def train_embedder(embedder, train_loader, val_loader, resume=True, scaler=None,
                 print("[Phase 1] Early stopping triggered.")
                 break
 
-    # Save scaler for downstream use
-    joblib.dump(embedder.scaler, os.path.join(ckpt_path.parent, "scaler.pkl"))
     return embedder, train_losses, val_losses

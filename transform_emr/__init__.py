@@ -1,6 +1,6 @@
 # transform_emr/__init__.py
 
-from transform_emr.embedding import EMREmbedding, train_embedder
+from transform_emr.embedder import EMREmbedding, train_embedder
 from transform_emr.dataset import EMRDataset, collate_emr
 from transform_emr.transformer import GPT
 from transform_emr.train import run_two_phase_training, phase_one, phase_two, prepare_data
