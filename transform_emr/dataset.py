@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from joblib import dump
+import numpy as np
 
 # ───────── local code ─────────────────────────────────────────────────── #
 from transform_emr.config.dataset_config import *
@@ -246,6 +247,13 @@ class EMRTokenizer:
         self.special_tokens = special_tokens
         self.token_weights = token_weights
         self.important_token_ids = important_token_ids
+        
+        # Validate presence of mandatory special tokens
+        required_specials = ["[MASK]", "[PAD]", "[CTX]"]
+        for tok in required_specials:
+            if tok not in token2id:
+                raise ValueError(f"[Tokenizer Error] Missing required special token: {tok}")
+
         self.mask_token_id = token2id["[MASK]"]
         self.pad_token_id = token2id["[PAD]"]
         self.ctx_token_id = token2id["[CTX]"]
@@ -291,6 +299,7 @@ class EMRTokenizer:
 
         return cls(token2id, rawconcept2id, concept2id, value2id, special_tokens, token_weights, important_token_ids)
     
+
     def save(self, path=os.path.join(CHECKPOINT_PATH, 'tokenizer.pt')):
         torch.save({
             'token2id': self.token2id,
@@ -299,13 +308,15 @@ class EMRTokenizer:
             'value2id': self.value2id,
             'special_tokens': self.special_tokens,
             'token_weights': self.token_weights,
-            'important_token_ids': self.important_token_ids 
+            'important_token_ids': self.important_token_ids,
+            'fingerprint': self.fingerprint()
         }, path)
+
 
     @classmethod
     def load(cls, path=os.path.join(CHECKPOINT_PATH, 'tokenizer.pt')):
         obj = torch.load(path)
-        return cls(
+        tokenizer = cls(
             token2id=obj['token2id'],
             rawconcept2id=obj['rawconcept2id'],
             concept2id=obj['concept2id'],
@@ -314,7 +325,13 @@ class EMRTokenizer:
             token_weights=obj['token_weights'],
             important_token_ids=obj['important_token_ids']
         )
+        tokenizer._loaded_fingerprint = obj.get('fingerprint')
+        return tokenizer
     
+
+    def fingerprint(self):
+        return hash(frozenset(self.token2id.items()))
+
 
 class EMRDataset(Dataset):
     def __init__(self, processed_df, context_df, tokenizer):
@@ -335,12 +352,24 @@ class EMRDataset(Dataset):
         self.tokens_df = processed_df
         self.context_df = context_df
 
-        # Map to token IDs using the tokenizer
-        self.tokens_df['RawConceptID'] = self.tokens_df['RawConcept'].map(self.tokenizer.rawconcept2id)
-        self.tokens_df['ConceptID'] = self.tokens_df['Concept'].map(self.tokenizer.concept2id)
-        self.tokens_df['ValueID'] = self.tokens_df['ValueToken'].map(self.tokenizer.value2id)
-        self.tokens_df['PositionID'] = self.tokens_df['PositionToken'].map(self.tokenizer.token2id).fillna(self.tokenizer.mask_token_id).astype(int)
+        # --- Mapping function with warnings ---
+        def safe_map(column, vocab, label):
+            mapped = self.tokens_df[column].map(vocab)
+            unknown = self.tokens_df.loc[mapped.isna(), column].unique()
+            if len(unknown) > 0:
+                print(f"[Warning][EMRDataset] Unknown {label} values found (count={len(unknown)}):")
+                for tok in unknown[:10]:  # only print a sample
+                    print(f"  - {tok}")
+                raise ValueError(f"[Dataset Error] Found unknown {label} entries. Tokenizer or parsing may be out of sync.")
+            return mapped.astype(int)
 
+        # --- Map with validation ---
+        self.tokens_df['RawConceptID'] = safe_map('RawConcept', self.tokenizer.rawconcept2id, 'RawConcept')
+        self.tokens_df['ConceptID']    = safe_map('Concept', self.tokenizer.concept2id, 'Concept')
+        self.tokens_df['ValueID']      = safe_map('ValueToken', self.tokenizer.value2id, 'ValueToken')
+        self.tokens_df['PositionID']   = safe_map('PositionToken', self.tokenizer.token2id, 'PositionToken')
+
+        # --- Sort and compute time deltas ---
         self.tokens_df = self.tokens_df.sort_values(['PatientID', 'TimePoint'])
         self.tokens_df['TimeDelta'] = self.tokens_df.groupby('PatientID')['TimePoint'].diff().fillna(0)
 
@@ -357,10 +386,37 @@ class EMRDataset(Dataset):
 
     def __getitem__(self, idx):
         """
-        Returns the subst of records for 1 patient.
+        Returns the subset of records for 1 patient.
         """
         pid = self.patient_ids[idx]
         df = self.patient_groups[pid]
+        
+        # Check each ID column
+        for col_name, vocab_dict in [
+            ("RawConceptID", self.tokenizer.rawconcept2id),
+            ("ConceptID", self.tokenizer.concept2id), 
+            ("ValueID", self.tokenizer.value2id),
+            ("PositionID", self.tokenizer.token2id)
+        ]:
+            ids = df[col_name].values
+            max_valid = len(vocab_dict) - 1
+            
+            if (ids > max_valid).any():
+                bad_ids = ids[ids > max_valid]
+                print(f"ERROR: Patient {pid} has out-of-bounds {col_name}: {bad_ids}")
+                print(f"  Valid range for {col_name}: [0, {max_valid}]")
+                print(f"  Actual range: [{ids.min()}, {ids.max()}]")
+                
+                # Show some examples of the problematic tokens
+                bad_positions = np.where(ids > max_valid)[0]
+                for pos in bad_positions[:3]:  # Show first 3
+                    print(f"  Position {pos}: {col_name}={ids[pos]}")
+                    if col_name == "PositionID":
+                        # Show the original token that caused this
+                        original_token = df.iloc[pos]["PositionToken"] 
+                        print(f"    Original token: '{original_token}'")
+                
+                raise ValueError(f"Found out-of-bounds {col_name} for patient {pid}")
 
         return {
             "raw_concept_ids": torch.tensor(df["RawConceptID"].values, dtype=torch.long),
@@ -370,7 +426,7 @@ class EMRDataset(Dataset):
             "delta_ts": torch.tensor(df["TimeDelta"].values, dtype=torch.float32),
             "abs_ts": torch.tensor(df["TimePoint"].values, dtype=torch.float32),
             "context_vec": torch.tensor(self.context_df.loc[pid].values, dtype=torch.float32),
-            "targets": torch.tensor(df["PositionID"].values, dtype=torch.long),  # next-token target
+            "targets": torch.tensor(df["PositionID"].values, dtype=torch.long),
         }
 
 

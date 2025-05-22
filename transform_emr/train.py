@@ -17,7 +17,7 @@ from tqdm import tqdm
 # ───────── local code ─────────────────────────────────────────────────── #
 from transform_emr.dataset import DataProcessor, EMRTokenizer, EMRDataset, collate_emr
 from transform_emr.embedder import EMREmbedding, train_embedder
-from transform_emr.transformer import GPT
+from transform_emr.transformer import GPT, train_transformer
 from transform_emr.utils import *
 from transform_emr.config.model_config import *
 from transform_emr.config.dataset_config import TRAIN_TEMPORAL_DATA_FILE, TRAIN_CTX_DATA_FILE
@@ -68,12 +68,25 @@ def prepare_data():
     temporal_df = pd.read_csv(TRAIN_TEMPORAL_DATA_FILE, low_memory=False)
     ctx_df = pd.read_csv(TRAIN_CTX_DATA_FILE)
 
-    print(f"[Pre-processing]: Building tokenizer...")
-    processor = DataProcessor(temporal_df, ctx_df, scaler=None)
-    temporal_df, ctx_df = processor.run()
+    if os.path.exists(os.path.join(CHECKPOINT_PATH, 'tokenizer.pt')):
+        print(f"[Pre-processing]: Loading tokenizer from checkpoint...")
+        tokenizer = EMRTokenizer.load()
+        tokenizer_fp = tokenizer.fingerprint()
 
-    tokenizer = EMRTokenizer.from_processed_df(temporal_df)
-    tokenizer.save()
+        processor = DataProcessor(temporal_df, ctx_df, scaler=None)
+        temporal_df, ctx_df = processor.run()
+
+        new_tokenizer = EMRTokenizer.from_processed_df(temporal_df)
+        if tokenizer_fp != new_tokenizer.fingerprint():
+            print("[Tokenizer Mismatch] Overwriting stale tokenizer with new one.")
+            tokenizer = new_tokenizer
+            tokenizer.save()  # update disk version
+    else:
+        print(f"[Pre-processing]: Building tokenizer...")
+        processor = DataProcessor(temporal_df, ctx_df, scaler=None)
+        temporal_df, ctx_df = processor.run()
+        tokenizer = EMRTokenizer.from_processed_df(temporal_df)
+        tokenizer.save()
 
     print(f"[Pre-processing]: Building dataset...")
     pids = temporal_df["PatientID"].unique()
@@ -93,7 +106,7 @@ def prepare_data():
     val_dl   = DataLoader(val_ds,  batch_size=TRAINING_SETTINGS.get('batch_size'), shuffle=False, collate_fn=collate_emr)
     return train_dl, val_dl, tokenizer
 
-def phase_one(train_dl, val_dl, embedder, resume=True):
+def phase_one(embedder, train_dl, val_dl, resume=True):
     return train_embedder(
         embedder=embedder,
         train_loader=train_dl,
@@ -101,171 +114,71 @@ def phase_one(train_dl, val_dl, embedder, resume=True):
         resume=resume
     )
 
-def phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    if not tune_embedder:
-        for p in embedder.parameters(): p.requires_grad = False
-        embedder.eval()
-    else:
-        embedder.train()
-
-    model = GPT(MODEL_CONFIG, embedder=embedder).to(device)
-
-    # AdamW with weight decay
-    optimizer = model.configure_optimizers(
-        weight_decay=TRAINING_SETTINGS.get("weight_decay"),
-        learning_rate=TRAINING_SETTINGS.get("phase2_learning_rate"),
-        betas=(0.9, 0.95)
-    )
-
-    # Optional: Reduce LR on plateau
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-6
-    )
-
-    outdir = Path(TRANSFORMER_CHECKPOINT).resolve().parent
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    # --- Load latest checkpoint if resume is requested
-    ckpt_last_path = outdir / "ckpt_last.pt"
-    if resume and ckpt_last_path.exists():
-        ckpt = torch.load(ckpt_last_path, map_location=device)
-        model.load_state_dict(ckpt["model_state"])
-        optimizer.load_state_dict(ckpt["optim_state"])
-        print(f"[Phase 2]: Resumed from checkpoint: {ckpt_last_path}")
-        start_epoch = ckpt.get("epoch", 0) + 1
-        best_val = ckpt.get("best_val", float("inf"))
-    else:
-        print(f"[Phase 2]: Starting transformer training loop...")
-        start_epoch = 0
-        best_val = float("inf")
-
-    wait = 0
-    patience = TRAINING_SETTINGS.get("patience", 5)
-    train_losses, val_losses = [], []
-
-    def run_epoch(loader, train_flag=False):
-        model.train() if train_flag else model.eval()
-        total_loss = 0.0
-        with torch.set_grad_enabled(train_flag):
-            for batch in tqdm(loader, desc="Training" if train_flag else "Validation", leave=False):
-                batch = {k: v.to(device) for k, v in batch.items()}
-                logits = model(
-                    raw_concept_ids=batch["raw_concept_ids"],
-                    concept_ids=batch["concept_ids"],
-                    value_ids=batch["value_ids"],
-                    position_ids=batch["position_ids"],
-                    delta_ts=batch["delta_ts"],
-                    abs_ts=batch["abs_ts"],
-                    context_vec=batch["context_vec"]
-                )
-
-                # Multi-hot targets
-                multi_hot = get_multi_hot_targets(
-                    position_ids=batch["targets"],
-                    padding_idx=model.embedder.padding_idx,
-                    vocab_size=logits.size(-1),
-                    k=TRAINING_SETTINGS["k_window"]
-                )
-
-                # Main loss: BCE with logits
-                loss_fn = nn.BCEWithLogitsLoss(pos_weight=model.embedder.tokenizer.token_weights.to(logits.device))
-                loss = loss_fn(logits[:, 1:], multi_hot) # [B, T, V] vs. [B, T, V]
-
-                # Get predicted token IDs
-                pred_ids = logits[:, :-1].argmax(dim=-1)              # [B, T]
-                target_ids = batch["targets"][:, 1:]                  # [B, T]
-
-                # Load penalties
-                penalty = 0.0
-                penalty += penalty_meal_order(pred_ids, model.embedder.tokenizer.id2token)
-                penalty += penalty_hallucinated_intervals(pred_ids, target_ids, model.embedder.tokenizer.id2token)
-                penalty += penalty_false_positives(
-                    predictions=torch.sigmoid(logits[:, :-1]),
-                    targets=multi_hot[:, :-1],
-                    token_weights=model.embedder.tokenizer.token_weights,
-                    important_token_ids=model.embedder.tokenizer.important_token_ids
-                )
-
-                # Combine with weighted penalty
-                loss = loss + TRAINING_SETTINGS.get("penalty_weight", 1.0) * penalty
-
-                if train_flag:
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-
-                total_loss += loss.item()
-        return total_loss / len(loader)
-
-    for epoch in range(start_epoch, TRAINING_SETTINGS.get("phase2_n_epochs")):
-        tr_loss = run_epoch(train_dl, train_flag=True)
-        vl_loss = run_epoch(val_dl, train_flag=False)
-
-        train_losses.append(tr_loss)
-        val_losses.append(vl_loss)
-
-        print(f"[Training Transformer]: Epoch {epoch:02d} | Train={tr_loss:.4f} | Val={vl_loss:.4f}")
-        scheduler.step(vl_loss)
-
-        # Save latest
-        torch.save({
-            "model_state": model.state_dict(),
-            "embedder_state": model.embedder.state_dict(),
-            "model_config": MODEL_CONFIG,
-            "epoch": epoch,
-            "optim_state": optimizer.state_dict(),
-            "best_val": best_val,
-        }, TRANSFORMER_CHECKPOINT)
-
-        # Save best
-        if vl_loss < best_val - 1e-3:
-            best_val = vl_loss
-            torch.save(model.state_dict(), TRANSFORMER_CHECKPOINT)
-            wait = 0
-        else:
-            wait += 1
-            if wait >= patience:
-                print("[Phase 2]: Early stopping triggered!")
-                break
-    
-    # --- plot loss curves
-    plot_losses(train_losses, val_losses)
+def phase_two(model, train_dl, val_dl, tune_embedder=True, resume=True):
+    return train_transformer(
+                        model=model, 
+                        train_dl=train_dl, 
+                        val_dl=val_dl, 
+                        tune_embedder=tune_embedder, 
+                        resume=resume, 
+                        checkpoint_path=TRANSFORMER_CHECKPOINT
+                    )
 
 
 def run_two_phase_training():
     train_dl, val_dl, tokenizer = prepare_data()
 
-    # Initiate empty
-    embedder = EMREmbedding(
-        tokenizer=tokenizer,
-        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
-        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
-        embed_dim=MODEL_CONFIG.get("embed_dim")
-    )
+    # --- Phase 1: Train or resume embedder ---
+    ckpt_embedder_path = Path(EMBEDDER_CHECKPOINT).resolve().parent / "ckpt_last.pt"
 
-    # Phase 1: will resume from ckpt internally if exists
-    embedder, _, _ = phase_one(train_dl, val_dl, embedder=embedder, resume=True)
+    if ckpt_embedder_path.exists():
+        embedder, _, _, _, _ = EMREmbedding.load(ckpt_embedder_path, tokenizer=tokenizer)
+    else:
+        embedder = EMREmbedding(
+            tokenizer=tokenizer,
+            ctx_dim=MODEL_CONFIG.get("ctx_dim"),
+            time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
+            embed_dim=MODEL_CONFIG.get("embed_dim")
+        )
 
-    # Phase 2: continues with the best embedder
-    phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True)
+    embedder, _, _ = phase_one(embedder=embedder, train_dl=train_dl, val_dl=val_dl, resume=True)
+
+    # --- Phase 2: Train or resume transformer ---
+    ckpt_last_path = Path(TRANSFORMER_CHECKPOINT).resolve().parent / "ckpt_last.pt"
+
+    if ckpt_last_path.exists():
+        model, _, _, _, _ = GPT.load(ckpt_last_path, embedder=embedder)
+    else:
+        model = GPT(cfg=MODEL_CONFIG, embedder=embedder)
+
+    phase_two(model=model, train_dl=train_dl, val_dl=val_dl, tune_embedder=True, resume=True)
 
 
 
 if __name__ == "__main__":
     train_dl, val_dl, tokenizer = prepare_data()
 
-    # Initiate empty
-    embedder = EMREmbedding(
-        tokenizer=tokenizer,
-        ctx_dim=MODEL_CONFIG.get("ctx_dim"),
-        time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
-        embed_dim=MODEL_CONFIG.get("embed_dim")
-    )
+    # --- Phase 1: Train or resume embedder ---
+    ckpt_embedder_path = Path(EMBEDDER_CHECKPOINT).resolve().parent / "ckpt_last.pt"
 
-    # Phase 1: will resume from ckpt internally if exists
-    embedder, _, _ = phase_one(train_dl, val_dl, embedder=embedder, resume=True)
+    if ckpt_embedder_path.exists():
+        embedder, _, _, _, _ = EMREmbedding.load(ckpt_embedder_path, tokenizer=tokenizer)
+    else:
+        embedder = EMREmbedding(
+            tokenizer=tokenizer,
+            ctx_dim=MODEL_CONFIG.get("ctx_dim"),
+            time2vec_dim=MODEL_CONFIG.get("time2vec_dim"),
+            embed_dim=MODEL_CONFIG.get("embed_dim")
+        )
 
-    # # Phase 2: continues with the best embedder
-    # phase_two(train_dl, val_dl, embedder, tune_embedder=True, resume=True)
+    embedder, _, _ = phase_one(embedder=embedder, train_dl=train_dl, val_dl=val_dl, resume=True)
+
+    # --- Phase 2: Train or resume transformer ---
+    ckpt_last_path = Path(TRANSFORMER_CHECKPOINT).resolve().parent / "ckpt_last.pt"
+
+    if ckpt_last_path.exists():
+        model, _, _, _, _ = GPT.load(ckpt_last_path, embedder=embedder)
+    else:
+        model = GPT(cfg=MODEL_CONFIG, embedder=embedder)
+
+    phase_two(model=model, train_dl=train_dl, val_dl=val_dl, tune_embedder=True, resume=True)

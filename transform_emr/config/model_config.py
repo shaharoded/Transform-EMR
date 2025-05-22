@@ -30,9 +30,9 @@ MODEL_CONFIG = {
     }
 
 TRAINING_SETTINGS = {
-    "phase1_n_epochs": 1,
+    "phase1_n_epochs": 10,
     "phase2_n_epochs": 50,
-    "patience": 0,
+    "patience": 5,
     "phase1_learning_rate": 5e-4,
     "phase2_learning_rate": 3e-4,
     "weight_decay": 1e-3,

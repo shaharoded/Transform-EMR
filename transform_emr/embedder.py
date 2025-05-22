@@ -6,7 +6,11 @@ import sklearn.preprocessing
 import math
 from pathlib import Path
 
+# ───────── local code ─────────────────────────────────────────────────── #
+from transform_emr.dataset import EMRTokenizer
+
 torch.serialization.add_safe_globals([
+    EMRTokenizer,
     sklearn.preprocessing.StandardScaler,
     numpy._core.multiarray.scalar,
     numpy._core.multiarray._reconstruct,
@@ -207,6 +211,62 @@ class EMREmbedding(nn.Module):
         )  # [B, T+1, D]
 
         return self.decoder(seq[:, :-1, :])  # Predict next token at each step
+    
+    def save(self, epoch, best_val, optimizer, scheduler, path):
+        torch.save({
+            "epoch": epoch,
+            "best_val": best_val,
+            "optim_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
+            "model_state": self.state_dict(),
+            "config": {
+                "ctx_dim": self.context_proj.in_features,
+                "time2vec_dim": self.time2vec_rel.freq.out_features + 1,
+                "embed_dim": self.output_dim,
+                "dropout": self.dropout.p,
+                "vocab_size": self.position_embed.num_embeddings,
+            }
+        }, path)
+    
+    @classmethod
+    def load(cls, path, tokenizer, map_location="cpu"):
+        """
+        Load EMREmbedding from a checkpoint.
+
+        Args:
+            path (str or Path): Path to checkpoint file.
+            tokenizer (EMRTokenizer): Tokenizer to verify against saved model config.
+            map_location (str): Device map for torch.load (default: 'cpu').
+
+        Returns:
+            model: Loaded EMREmbedding instance
+            epoch (int): Last epoch saved in checkpoint
+            best_val (float): Best validation loss
+            optimizer_state (dict): State dict for optimizer
+            scheduler_state (dict): State dict for LR scheduler
+        """
+        ckpt = torch.load(path, map_location=map_location)
+        config = ckpt["config"]
+
+        # === Safety check: tokenizer vocab consistency ===
+        expected_vocab = config["vocab_size"]
+        actual_vocab = len(tokenizer.token2id)
+        if expected_vocab != actual_vocab:
+            raise ValueError(
+                f"[EMREmbedding.load] Tokenizer vocab size mismatch: "
+                f"expected {expected_vocab}, got {actual_vocab}"
+            )
+
+        model = cls(
+            tokenizer=tokenizer,
+            ctx_dim=config["ctx_dim"],
+            time2vec_dim=config["time2vec_dim"],
+            embed_dim=config["embed_dim"],
+            dropout=config["dropout"]
+        )
+        model.load_state_dict(ckpt["model_state"])
+
+        return model, ckpt["epoch"], ckpt["best_val"], ckpt["optim_state"], ckpt["scheduler_state"]
 
 
 def train_embedder(embedder, train_loader, val_loader, resume=True):
@@ -231,24 +291,23 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
     ckpt_last = ckpt_path.parent / "ckpt_last.pt"
 
     # ----- Loss & Optimizer -----
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=embedder.tokenizer.token_weights.to(device))
     optimizer = torch.optim.AdamW(embedder.parameters(), lr=TRAINING_SETTINGS["phase1_learning_rate"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-6)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=embedder.tokenizer.token_weights.to(device))
 
     # ----- Resume logic -----
     train_losses, val_losses = [], []
     start_epoch = 1
     best_val = float("inf")
     bad_epochs = 0
-
+    
     if resume and ckpt_last.exists():
         print(f"[Phase 1] Resuming from checkpoint: {ckpt_last}")
-        ckpt = torch.load(ckpt_last, map_location=device)
-        embedder.load_state_dict(ckpt["model_state"])
-        optimizer.load_state_dict(ckpt["optim_state"])
-        scheduler.load_state_dict(ckpt["scheduler_state"])
-        best_val = ckpt["best_val"]
-        start_epoch = ckpt["epoch"] + 1
+        embedder, start_epoch, best_val, optim_state, scheduler_state = EMREmbedding.load(ckpt_last, tokenizer=embedder.tokenizer, map_location=device)
+        embedder.to(device)
+        optimizer.load_state_dict(optim_state)
+        scheduler.load_state_dict(scheduler_state)
+        start_epoch += 1
 
     # ----- Epoch function -----
     def run_epoch(loader, train=False):
@@ -256,30 +315,28 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
         total_loss = 0
 
         for batch in loader:
-            raw_concept_ids = batch["raw_concept_ids"].to(device)
-            concept_ids = batch["concept_ids"].to(device)
-            value_ids = batch["value_ids"].to(device)
-            position_ids = batch["position_ids"].to(device)
-            delta_ts = batch["delta_ts"].to(device)
-            abs_ts = batch["abs_ts"].to(device)
-            context_vec = batch["context_vec"].to(device)
-
+            batch = {k: v.to(device) for k, v in batch.items()}
+            
             if train:
                 optimizer.zero_grad()
-
+            
             logits = embedder.forward_with_decoder(
-                raw_concept_ids=raw_concept_ids,
-                concept_ids=concept_ids,
-                value_ids=value_ids,
-                position_ids=position_ids,
-                delta_ts=delta_ts,
-                abs_ts=abs_ts,
-                patient_contexts=context_vec
+                raw_concept_ids=batch["raw_concept_ids"],
+                concept_ids=batch["concept_ids"],
+                value_ids=batch["value_ids"],
+                position_ids=batch["position_ids"],
+                delta_ts=batch["delta_ts"],
+                abs_ts=batch["abs_ts"],
+                patient_contexts=batch["context_vec"]
             )  # [B, T, V]
 
             B, T, V = logits.shape
-            multi_hot_targets = get_multi_hot_targets(position_ids=position_ids, padding_idx=embedder.padding_idx, 
-                                                      vocab_size=V, k=TRAINING_SETTINGS["k_window"])
+            multi_hot_targets = get_multi_hot_targets(
+                                                    position_ids=batch["position_ids"], 
+                                                    padding_idx=embedder.padding_idx, 
+                                                    vocab_size=logits.size(-1), 
+                                                    k=TRAINING_SETTINGS["k_window"]
+                                                    )
             loss = loss_fn(logits, multi_hot_targets)
 
             if train:
@@ -303,19 +360,12 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
         scheduler.step(vl_loss)
 
         # Save last checkpoint
-        torch.save({
-            "epoch": epoch,
-            "model_state": embedder.state_dict(),
-            "optim_state": optimizer.state_dict(),
-            "scheduler_state": scheduler.state_dict(),
-            "best_val": best_val,
-            "tokenizer": embedder.tokenizer,
-        }, ckpt_last)
+        embedder.save(epoch, best_val, optimizer, scheduler, ckpt_last)
 
         # Save best model
         if vl_loss < best_val - 1e-4:
             best_val = vl_loss
-            torch.save(embedder.state_dict(), ckpt_path)
+            embedder.save(epoch, best_val, optimizer, scheduler, ckpt_path)
         else:
             bad_epochs += 1
             if bad_epochs >= TRAINING_SETTINGS["patience"]:
