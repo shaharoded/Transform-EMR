@@ -1,15 +1,19 @@
 
 import torch
 import pandas as pd
-from transform_emr.dataset import EMRTokenizer
-from transform_emr.inference import load_test_data, load_transformer, load_embedder, infer_event_stream, get_token_embedding
-
 import pytest
+
+from transform_emr.dataset import EMRTokenizer
+from transform_emr.inference import load_test_data, infer_event_stream, get_token_embedding
+from transform_emr.embedder import EMREmbedding
+from transform_emr.transformer import GPT
+from transform_emr.config.model_config import EMBEDDER_CHECKPOINT, TRANSFORMER_CHECKPOINT
+
 
 @pytest.mark.order(4)
 def test_embedder_token_embedding():
     tokenizer = EMRTokenizer.load()
-    embedder = load_embedder()
+    embedder, _, _, _, _ = EMREmbedding.load(EMBEDDER_CHECKPOINT, tokenizer=tokenizer)
 
     sample_token = next(iter(tokenizer.token2id))
     vec = get_token_embedding(embedder, sample_token)
@@ -21,17 +25,15 @@ def test_embedder_token_embedding():
 
 @pytest.mark.order(5)
 def test_inference_on_test_data():
-    # Load test data    
     dataset = load_test_data(max_input_days=5)
 
-    # Load model
-    model = load_transformer()
-    model.eval()
+    tokenizer = EMRTokenizer.load()
+    embedder, _, _, _, _ = EMREmbedding.load(EMBEDDER_CHECKPOINT, tokenizer=tokenizer)
+    model, _, _, _, _ = GPT.load(TRANSFORMER_CHECKPOINT, embedder=embedder)
 
-    # Run inference
+    model.eval()
     result_df = infer_event_stream(model, dataset)
 
-    # Validate output
     assert isinstance(result_df, pd.DataFrame)
     assert set(["PatientID", "Step", "Token", "IsInput", "IsOutcome", "IsTerminal"]).issubset(result_df.columns)
     assert len(result_df) > 0

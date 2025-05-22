@@ -6,13 +6,10 @@ Phase‑1 : call embedding.train()  ------------>  pretrained_embedder.pt
 Phase‑2 : GPT( pretrained_embedder, fine-tuned during training )  ->  best.pt
 """
 
-import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from pathlib import Path
-from tqdm import tqdm
 
 # ───────── local code ─────────────────────────────────────────────────── #
 from transform_emr.dataset import DataProcessor, EMRTokenizer, EMRDataset, collate_emr
@@ -71,16 +68,10 @@ def prepare_data():
     if os.path.exists(os.path.join(CHECKPOINT_PATH, 'tokenizer.pt')):
         print(f"[Pre-processing]: Loading tokenizer from checkpoint...")
         tokenizer = EMRTokenizer.load()
-        tokenizer_fp = tokenizer.fingerprint()
 
         processor = DataProcessor(temporal_df, ctx_df, scaler=None)
         temporal_df, ctx_df = processor.run()
 
-        new_tokenizer = EMRTokenizer.from_processed_df(temporal_df)
-        if tokenizer_fp != new_tokenizer.fingerprint():
-            print("[Tokenizer Mismatch] Overwriting stale tokenizer with new one.")
-            tokenizer = new_tokenizer
-            tokenizer.save()  # update disk version
     else:
         print(f"[Pre-processing]: Building tokenizer...")
         processor = DataProcessor(temporal_df, ctx_df, scaler=None)
