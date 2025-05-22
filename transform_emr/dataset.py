@@ -56,6 +56,7 @@ class DataProcessor:
         if self.scaler is None:
             scaler = StandardScaler()
             self.context_df.loc[:, :] = scaler.fit_transform(self.context_df.values)
+            os.makedirs(CHECKPOINT_PATH, exist_ok=True)
             dump(scaler, os.path.join(CHECKPOINT_PATH, 'scaler.pkl'))
         else:
             self.context_df.loc[:, :] = self.scaler.transform(self.context_df.values)

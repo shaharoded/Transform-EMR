@@ -6,7 +6,7 @@ general util functions for the package
 """
 import matplotlib.pyplot as plt
 import torch
-from collections import Counter, defaultdict
+from collections import Counter
 
 
 # ───────── local code ─────────────────────────────────────────────────── #
