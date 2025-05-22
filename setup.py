@@ -10,6 +10,7 @@ setup(
         "numpy",
         "scikit-learn",
         "tqdm",
-        "matplotlib"
+        "matplotlib",
+        "openpyxl"
     ],
 )

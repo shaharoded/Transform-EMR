@@ -131,6 +131,12 @@ You can perform local tests (not unit-tests) by activating the `.py` files, usin
 For example, run this from the root:
 ```bash
 python -m transform_emr.train
+
+# Or
+
+python -m transform_emr.inference
+
+# Both modules have a __main__ activation to train / infer on atrained model 
 ```
 ---
 

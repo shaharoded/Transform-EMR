@@ -108,6 +108,12 @@ def infer_event_stream(model, dataset, max_len=500, temperature=1.0):
                     context_vec=ctx_vec
                 )
                 next_logits = logits[:, -1, :]  # shape: [1, V]
+                
+                # Ensure no [MASK] as output
+                mask_id = model.embedder.tokenizer.token2id.get("[MASK]")
+                next_logits[0, mask_id] = -float("inf")
+
+                # Softmax
                 next_probs = F.softmax(next_logits / temperature, dim=-1)
 
                 # Avoid selecting [PAD] token
@@ -150,29 +156,57 @@ def infer_event_stream(model, dataset, max_len=500, temperature=1.0):
 
 
 if __name__ == "__main__":
+    import random
+    import joblib
+    from pathlib import Path
     from transform_emr.embedder import EMREmbedding
     from transform_emr.transformer import GPT
     from transform_emr.dataset import DataProcessor, EMRTokenizer, EMRDataset
     from transform_emr.config.model_config import *
 
-    # Mini flow to test inferece on the test dataset
+    # Load test data
     df = pd.read_csv(TEST_TEMPORAL_DATA_FILE, low_memory=False)
     ctx_df = pd.read_csv(TEST_CTX_DATA_FILE)
 
-    # Load scaler and tokenizer
-    scaler = joblib.load(Path(CHECKPOINT_PATH) / "scaler.pkl")
+    # Load tokenizer and scaler
     tokenizer = EMRTokenizer.load(Path(CHECKPOINT_PATH) / "tokenizer.pt")
+    scaler = joblib.load(Path(CHECKPOINT_PATH) / "scaler.pkl")
 
-    # Run processing
+    # Run preprocessing
     processor = DataProcessor(df, ctx_df, scaler=scaler, max_input_days=5)
     df, ctx_df = processor.run()
 
-    # Create dataset
-    dataset = EMRDataset(df, ctx_df, tokenizer=tokenizer)
+    # ⚠️ Subset: Pick N random patients for this inference batch
+    patient_ids = df["PatientID"].unique()
+    N = 10  # adjust as needed
+    selected_ids = sorted(random.sample(list(patient_ids), N))
 
-    tokenizer = EMRTokenizer.load()
+    df_subset = df[df["PatientID"].isin(selected_ids)].copy()
+    ctx_subset = ctx_df.loc[selected_ids].copy()
+
+    # Create dataset
+    dataset = EMRDataset(df_subset, ctx_subset, tokenizer=tokenizer)
+
+    # Load models
     embedder, _, _, _, _ = EMREmbedding.load(EMBEDDER_CHECKPOINT, tokenizer=tokenizer)
     model, _, _, _, _ = GPT.load(TRANSFORMER_CHECKPOINT, embedder=embedder)
-
     model.eval()
-    result_df = infer_event_stream(model, dataset)
+
+    # Run inference
+    result_df = infer_event_stream(model, dataset, temperature=1.0)  # optional: adjust temperature
+
+    # Input events
+    input_df = df_subset.copy()
+    input_df = input_df.sort_values(["PatientID", "TimePoint"])
+
+    # Sort generated as well
+    result_df = result_df.sort_values(["PatientID", "Step"])
+
+    # Save to Excel with two sheets
+    output_path = Path(CHECKPOINT_PATH) / "inference_results.xlsx"
+    with pd.ExcelWriter(output_path) as writer:
+        result_df.to_excel(writer, sheet_name="Generated Events", index=False)
+        input_df.to_excel(writer, sheet_name="Input Events", index=False)
+
+    print(f"Inference results saved to: {output_path}")
+
