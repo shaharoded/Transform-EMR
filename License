@@ -33,7 +33,7 @@ Upon official publication of the associated thesis or article, this code will be
 
 Please cite:
 
-> Shahar Oded. "Predicting Clinical Outcomes and Assessing the Effects of Compliance to Diabetes Care Guidelines in Hospitals Using Time-Dependent Machine Learning Methods." Master's Thesis, Ben-Gurion University of the Negev, 2025. https://github.com/shaharoded/transform-emr
+> Shahar Oded. "Predicting Clinical Outcomes and Assessing the Effects of Compliance to Diabetes Care Guidelines in Hospitals Using Time-Dependent Machine Learning Methods." Master's Thesis, Ben-Gurion University of the Negev, 2025. https://github.com/shaharoded/Transform-EMR
 
 BibTeX:
 @thesis{Oded2025emrtransformer,
@@ -41,7 +41,7 @@ BibTeX:
   title     = {Predicting Clinical Outcomes and Assessing the Effects of Compliance to Diabetes Care Guidelines in Hospitals Using Time-Dependent Machine Learning Methods},
   school    = {Ben-Gurion University of the Negev},
   year      = {2025},
-  note      = {Available at https://github.com/shaharoded/transform-emr}
+  note      = {Available at https://github.com/shaharoded/Transform-EMR}
 }
 
 ──────────────────────────────────────────────────────────────
