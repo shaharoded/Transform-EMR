@@ -4,6 +4,7 @@ import torch.nn as nn
 import sklearn.preprocessing
 import math
 from pathlib import Path
+from tqdm import tqdm
 
 # ───────── local code ─────────────────────────────────────────────────── #
 from transform_emr.dataset import EMRTokenizer
@@ -313,7 +314,7 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
         embedder.train() if train else embedder.eval()
         total_loss = 0
 
-        for batch in loader:
+        for batch in tqdm(loader, desc="Training" if train else "Validation", leave=False):
             batch = {k: v.to(device) for k, v in batch.items()}
             
             if train:
@@ -329,7 +330,6 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
                 patient_contexts=batch["context_vec"]
             )  # [B, T, V]
 
-            B, T, V = logits.shape
             multi_hot_targets = get_multi_hot_targets(
                                                     position_ids=batch["position_ids"], 
                                                     padding_idx=embedder.padding_idx, 
