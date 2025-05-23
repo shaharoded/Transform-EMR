@@ -149,12 +149,19 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList([Block(cfg) for _ in range(cfg["n_layer"])])
         self.ln_f  = LayerNorm(cfg["embed_dim"], bias=cfg["bias"])
 
-
+        # Next token prediction head (What will be the next event?)
         self.lm_head = nn.Linear(cfg["embed_dim"], vocab_size, bias=False)
         self.lm_head.weight = self.embedder.position_embed.weight  # weight tying
         assert self.lm_head.weight.shape[0] == vocab_size, (
             f"[GPT] lm_head output dim ({self.lm_head.weight.shape[0]}) "
             f"does not match embedder.position_embed ({vocab_size})"
+        )
+
+        # Delta T prediction head (for regression of delta_t at each step -> When will next event occur?)
+        self.delta_t_head = nn.Sequential(
+            nn.Linear(cfg["embed_dim"], 16 * cfg["time2vec_dim"]),
+            nn.ReLU(),
+            nn.Linear(16 * cfg["time2vec_dim"], 1)  # Output: scalar delta_t
         )
 
         self.apply(self._init_weights)
@@ -219,7 +226,7 @@ class GPT(nn.Module):
 
     # ---------------------------------------------------- forward & loss ---- #
     def forward(self, raw_concept_ids, concept_ids, value_ids, position_ids,
-            delta_ts, abs_ts, context_vec=None, targets=None):
+            delta_ts, abs_ts, context_vec=None):
         """
         All tensors come straight from `collate_emr`:
             raw_concept_ids (torch.Tensor)   - padded raw_concept ids, (B, T)
@@ -229,7 +236,6 @@ class GPT(nn.Module):
             delta_ts (torch.Tensor)          - relative start times from last event (hours), (B, T)
             abs_ts (torch.Tensor)            - relative start times from ADMISSION (hours), (B, T)
             context_vec (torch.Tensor)       - age/gender or [] if not used, (B, C)
-            targets (torch.Tensor)           - same size as token_ids (for next-token loss), (B, T)
         """
         def _forward(block, x):
             """Allows gradient checkpointing on blocks -> Memory efficient"""
@@ -237,14 +243,18 @@ class GPT(nn.Module):
         
         x = self.drop(self.embedder(raw_concept_ids, concept_ids, value_ids, position_ids,
             delta_ts, abs_ts, context_vec, return_mask=False))  # (B, T+1, D)
+        
         for blk in self.blocks:
             if self.training and self.use_checkpoint:
                 x = checkpoint.checkpoint(_forward, blk, x, use_reentrant=False)
             else:
                 x = blk(x)
-        logits = self.lm_head(self.ln_f(x))                     # (B, T+1, V)
+        
+        x = self.ln_f(x)
+        logits = self.lm_head(x)            # (B, T+1, V)
+        delta_t_pred = self.delta_t_head(x)     # (B, T+1, 1)
 
-        return logits  # loss is computed in train.py
+        return logits, delta_t_pred.squeeze(-1)  # loss is computed in train.py, squeeze for easier MSE
     
 
     def save(self, path, epoch=None, best_val=None, optimizer=None, scheduler=None):
@@ -331,7 +341,7 @@ def train_transformer(model, train_dl, val_dl, tune_embedder=True, resume=True, 
         with torch.set_grad_enabled(train_flag):
             for batch in tqdm(loader, desc="Training" if train_flag else "Validation", leave=False):
                 batch = {k: v.to(device) for k, v in batch.items()}
-                logits = model(
+                logits, delta_t_pred = model(
                     raw_concept_ids=batch["raw_concept_ids"],
                     concept_ids=batch["concept_ids"],
                     value_ids=batch["value_ids"],
@@ -377,8 +387,14 @@ def train_transformer(model, train_dl, val_dl, tune_embedder=True, resume=True, 
                     important_token_ids=model.embedder.tokenizer.important_token_ids
                 )
 
+                # Predict delta_ts[:, 1:] using model delta_t_head
+                true_delta = torch.clamp(batch["delta_ts"], 0.0, 720.0)  # Cap to 30 days, [B, T]
+                pred_delta = delta_t_pred[:, 1:]                                # [B, T]
+                delta_t_loss = F.mse_loss(pred_delta, true_delta)               # scalar
+
                 # Combine with weighted penalty
-                loss = loss + TRAINING_SETTINGS.get("penalty_weight", 1.0) * penalty
+                loss = loss + TRAINING_SETTINGS.get("penalty_weight", 1.0) * penalty + \
+                    TRAINING_SETTINGS.get("delta_t_weight", 1.0) * delta_t_loss
 
                 if train_flag:
                     optimizer.zero_grad()
@@ -406,9 +422,10 @@ def train_transformer(model, train_dl, val_dl, tune_embedder=True, resume=True, 
             model.save(ckpt_path, epoch, best_val, optimizer, scheduler)
             wait = 0
         else:
-            wait += 1
-            if wait >= patience:
-                print("[GPT]: Early stopping triggered.")
-                break
+            if epoch >= TRAINING_SETTINGS["warmup_epochs"]:
+                wait += 1
+                if wait >= patience:
+                    print("[GPT]: Early stopping triggered.")
+                    break
 
     plot_losses(train_losses, val_losses)

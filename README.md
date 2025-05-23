@@ -284,8 +284,3 @@ This work builds on and adapts ideas from the following sources:
 - **nanoGPT** (Karpathy, 2023):  
   The training loop and transformer backbone are adapted from [nanoGPT](https://github.com/karpathy/nanoGPT),  
   with modifications for multi-stream EMR inputs, multiple embeddings, and a k-step prediction loss.
-
-
-
-## TO-DO
- - Transformer generation is currently assuming time progress by 1 hour between every 2 events. A seperate model can and should predict the relevant time between events to provide better positioning between events. This will also solve the "when" issue for predicted events.

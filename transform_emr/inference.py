@@ -86,6 +86,8 @@ def infer_event_stream(model, dataset, max_len=500, temperature=1.0):
             rows.append({
                 "PatientID": pid,
                 "Step": i + 1,
+                "TimeDelta": delta_ts[0, i].item(),
+                "TimePoint": abs_ts[0, i].item(),
                 "Token": id2token.get(tok_id, f"<UNK_{tok_id}>"),
                 "IsInput": 1,
                 "IsOutcome": int(tok_id in outcome_ids),
@@ -98,7 +100,7 @@ def infer_event_stream(model, dataset, max_len=500, temperature=1.0):
         steps = 0
         while steps < max_len:
             with torch.no_grad():
-                logits = model(
+                logits, delta_t_preds = model(
                     raw_concept_ids=raw_ids,
                     concept_ids=concept_ids,
                     value_ids=value_ids,
@@ -127,9 +129,15 @@ def infer_event_stream(model, dataset, max_len=500, temperature=1.0):
             is_outcome = next_token_id in outcome_ids
             is_terminal = next_token_id in terminal_ids
 
+            # Predicted delta for next token
+            pred_delta_t = delta_t_preds[0, -1].item()
+            pred_delta_t = min(max(pred_delta_t, 0.0), 720.0)  # Avoid negative or NaN, limit next token to 30 days
+
             rows.append({
                 "PatientID": pid,
                 "Step": raw_ids.shape[1] + 1,
+                "TimeDelta": pred_delta_t,
+                "TimePoint": abs_ts[0, -1].item(),
                 "Token": tok_str,
                 "IsInput": 0,
                 "IsOutcome": int(is_outcome),
@@ -146,8 +154,8 @@ def infer_event_stream(model, dataset, max_len=500, temperature=1.0):
             concept_ids = torch.cat([concept_ids, torch.tensor([[concept_id]], device=device)], dim=1)
             value_ids   = torch.cat([value_ids, torch.tensor([[value_id]], device=device)], dim=1)
             pos_ids     = torch.cat([pos_ids, torch.tensor([[next_token_id]], device=device)], dim=1)
-            delta_ts    = torch.cat([delta_ts, torch.tensor([[1.0]], device=device)], dim=1) # Incrementing time by 1 hour
-            abs_ts      = torch.cat([abs_ts, abs_ts[:, -1:] + 1.0], dim=1) # Incrementing time by 1 hour
+            delta_ts = torch.cat([delta_ts, torch.tensor([[pred_delta_t]], device=device)], dim=1)
+            abs_ts = torch.cat([abs_ts, abs_ts[:, -1:] + pred_delta_t], dim=1)
 
             steps += 1
 

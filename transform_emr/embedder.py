@@ -366,9 +366,10 @@ def train_embedder(embedder, train_loader, val_loader, resume=True):
             best_val = vl_loss
             embedder.save(epoch, best_val, optimizer, scheduler, ckpt_path)
         else:
-            bad_epochs += 1
-            if bad_epochs >= TRAINING_SETTINGS["patience"]:
-                print("[Phase 1] Early stopping triggered.")
-                break
+            if epoch >= TRAINING_SETTINGS["warmup_epochs"]:
+                bad_epochs += 1
+                if bad_epochs >= TRAINING_SETTINGS["patience"]:
+                    print("[Phase 1] Early stopping triggered.")
+                    break
 
     return embedder, train_losses, val_losses
