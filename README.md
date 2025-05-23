@@ -272,10 +272,19 @@ Once the EMR structure is captured, the transformer learns to model sequential d
 
 ---
 
-## 📚 Citation
-Inspired by recent advancements in temporal deep learning, sequence modeling in healthcare (BEHRT, RETAIN, Med-BERT), and Time2Vec (Kazemi et al.).
+## 📚 Citation & Acknowledgments
 
-The training loop and embedder design are adapted from Andrej Karpathy’s minimal GPT-2 implementation (https://github.com/karpathy/nanoGPT), with modifications for multi-embedding structure and k-step prediction loss.
+This work builds on and adapts ideas from the following sources:
+
+- **Time2Vec** (Kazemi et al., 2019):  
+  The temporal embedding design is adapted from the Time2Vec formulation.  
+  📄 *A. Kazemi, S. Ghamizi, A.-H. Karimi. "Time2Vec: Learning a Vector Representation of Time." NeurIPS 2019 Time Series Workshop.*  
+  [arXiv:1907.05321](https://arxiv.org/abs/1907.05321)
+
+- **nanoGPT** (Karpathy, 2023):  
+  The training loop and transformer backbone are adapted from [nanoGPT](https://github.com/karpathy/nanoGPT),  
+  with modifications for multi-stream EMR inputs, multiple embeddings, and a k-step prediction loss.
+
 
 
 ## TO-DO
