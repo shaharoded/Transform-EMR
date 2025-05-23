@@ -15,11 +15,11 @@ event-prediction-in-diabetes-care/
 │   │   └── model_config.py
 │   │
 │   ├── dataset.py                     # Dataset, DataPreprocess and Tokenizer
-│   ├── embedding.py                   # Embedding model (EMREmbedding)
-│   ├── transformer.py                 # Transformer architecture
-│   ├── train.py                       # Training logic
+│   ├── embedder.py                    # Embedding model (EMREmbedding) + training
+│   ├── transformer.py                 # Transformer architecture (GPT) + training
+│   ├── train.py                       # Full training pipeline (2-phase)
 │   ├── inference.py                   # Inference pipeline
-│   └── utils.py                       # Utility functions
+│   └── utils.py                       # Utility functions for the package (plots + loss penalties)
 │
 ├── data/                              # External data folder (for synthetic or real EMR)
 │   ├── generate_synthetic_data.ipynb  # A notebook that generates synthetic data similar in structure to original
@@ -30,6 +30,8 @@ event-prediction-in-diabetes-care/
 │
 ├── .gitignore
 ├── requirements.txt
+├── LICENCE
+├── CITATION.cff
 ├── setup.py
 └── README.md
 ```
@@ -86,44 +88,48 @@ but you'll need to adjust the imports. Use `train.py` structure for that.
 ### 3. Inference from the Model
 
 ```python
-import pandas as pd
-import joblib
-from pathlib import Path
+    import random
+    import joblib
+    from pathlib import Path
+    from transform_emr.embedder import EMREmbedding
+    from transform_emr.transformer import GPT
+    from transform_emr.dataset import DataProcessor, EMRTokenizer, EMRDataset
+    from transform_emr.config.model_config import *
 
-from transform_emr.config.dataset_config import *
-from transform_emr.config.model_config import *
-from transform_emr.dataset import DataProcessor, EMRTokenizer, EMRDataset
+    # Load test data
+    df = pd.read_csv(TEST_TEMPORAL_DATA_FILE, low_memory=False)
+    ctx_df = pd.read_csv(TEST_CTX_DATA_FILE)
 
-df = pd.read_csv(TEST_TEMPORAL_DATA_FILE, low_memory=False)
-ctx_df = pd.read_csv(TEST_CTX_DATA_FILE)
+    # Load tokenizer and scaler
+    tokenizer = EMRTokenizer.load(Path(CHECKPOINT_PATH) / "tokenizer.pt")
+    scaler = joblib.load(Path(CHECKPOINT_PATH) / "scaler.pkl")
 
-# Load scaler and tokenizer
-scaler = joblib.load(Path(CHECKPOINT_PATH) / "scaler.pkl")
-tokenizer = EMRTokenizer.load(Path(CHECKPOINT_PATH) / "tokenizer.pt")
+    # Run preprocessing
+    processor = DataProcessor(df, ctx_df, scaler=scaler, max_input_days=5)
+    df, ctx_df = processor.run()
 
-# Run processing
-processor = DataProcessor(df, ctx_df, scaler=scaler, max_input_days=5)
-df, ctx_df = processor.run()
+    patient_ids = df["PatientID"].unique()
+    df_subset = df[df["PatientID"].isin(patient_ids)].copy()
+    ctx_subset = ctx_df.loc[patient_ids].copy()
 
-# Create dataset
-dataset = EMRDataset(df, ctx_df, tokenizer=tokenizer)
+    # Create dataset
+    dataset = EMRDataset(df_subset, ctx_subset, tokenizer=tokenizer)
 
-# This should be updates from the training Dataset, or updated here manually:
-MODEL_CONFIG["ctx_dim"] = ...
+    # Load models
+    embedder, _, _, _, _ = EMREmbedding.load(EMBEDDER_CHECKPOINT, tokenizer=tokenizer)
+    model, _, _, _, _ = GPT.load(TRANSFORMER_CHECKPOINT, embedder=embedder)
+    model.eval()
 
-# Load model
-model = load_transformer() # Handles the loading of the embedder as well
-model.eval()
-
-results_df = infer_event_stream(model, ds, max_len=500)
+    # Run inference
+    result_df = infer_event_stream(model, dataset, temperature=1.0)  # optional: adjust temperature
 ```
 
 This results_df will include both input events and generated events and will have these columns:
-{"PatientID", "Step", "Token", "IsInput", "IsOutcome", "IsTerminal"}
+{"PatientID", "Step", "Token", "IsInput", "IsOutcome", "IsTerminal", "TimeDelta", "TimePoint"}
 
-You can analize the model's performance by comparing the input (full input) to the output (not directly)
+You can analize the model's performance by comparing the input (`dataset.tokens_df`) to the output:
  - Were all complications generated?
- - Were all complications generated on time? (use MEAL tokens to infer the time a model designated for an event)
+ - Were all complications generated on time? (Set a forgiving boundry)
 
 
 ### 4. Using as a module
@@ -225,8 +231,10 @@ Per-patient Event Tokenization (with normalized timestamps)
 
 | Component            | Role                                                                                             |
 |---------------------|--------------------------------------------------------------------------------------------------|
+| `DataProcessor`        | Performs all necessary data processing, from input data to tokens_df.  |
+| `EMRTokenizer`        | Transforming a processed temporal_df into a tokenizer that can be saved and passed between objects for compatability.                     |
 | `EMRDataset`        | Converts raw EMR tables into per-patient token sequences with relative time.                     |
-| `_expand_tokens()`  | Generates CONCEPT_VALUE_(START/END) or single tokens from events. Tokenizing using (START/END) for time intervals allows to capture the length of an event (TIRP - a state or trend).                         |
+
 | `collate_emr()`     | Pads sequences and returns tensors|
 
 📌 **Why it matters:**  
@@ -242,8 +250,11 @@ Medical data varies in density and structure across patients. This dynamic prepr
 | `EMREmbedding`      | Combines token, time, and patient context embeddings. Adds `[CTX]` token for global patient info. |
 | `train_embedder()`  | Trains the embedding model with teacher-forced next-token prediction.                            |
 
-🧠 **Insight:**  
+⚙️ **Phase 1: Learning Events Representation**  
 Phase 1 learns a robust, patient-aware representation of their event sequences. It isolates the core structure of patient timelines without being confounded by the autoregressive depth of Transformers.
+The embedder uses:
+- 4 levels of tokens - The event token is seperated to 4 hierarichal components to impose similarity between tokens of the same domain: `GLUCOSE` -> `GLUCOSE_TREND` -> `GLUCOSE_TREND_Inc` -> `GLUCOSE_TREND_Inc_Start`
+- 2 levels of time - Delta T from the previous event, to predict local patterns, and ABS T from ADMISSION, to understand global patterns.
 
 ---
 
@@ -251,15 +262,24 @@ Phase 1 learns a robust, patient-aware representation of their event sequences. 
 
 | Component           | Role                                                                                              |
 |--------------------|---------------------------------------------------------------------------------------------------|
-| `GPT`               | Transformer decoder stack over learned embeddings.                                                |
+| `GPT`               | Transformer decoder stack over learned embeddings for next token prediction, with an additional head for delta_t prediction. Model inputs a trained embedder.                                               |
 | `CausalSelfAttention` | Multi-head attention using causal mask to enforce chronology.                                 |
-| `configure_optimizers()` | Groups model parameters for AdamW with correct weight decay policy.                         |
+| `train_transformer()` | Complete training logic for the model using a BCE with multi-hot targets to account for EMR irregularities.                         |
 
 ⚙️ **Phase 2: Learning Sequence Dependencies**  
 Once the EMR structure is captured, the transformer learns to model sequential dependencies in event progression:  
 - What tends to follow a certain event?  
 - How does timing affect outcomes?  
 - How does patient context modulate the trajectory?
+
+---
+
+### 4. **`inference.py`** – Generating output from the model
+
+| Component           | Role                                                                                              |
+|--------------------|---------------------------------------------------------------------------------------------------|
+| `get_token_embedding()` | Select a token and get it's embeddings based on an input embedder.                                 |
+| `infer_event_stream()` | Generate predicted stream of events on an input dataset (Test).                         |
 
 ---
 
