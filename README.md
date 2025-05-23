@@ -2,7 +2,9 @@
 
 This repository implements a two-phase deep learning pipeline for modeling longitudinal Electronic Medical Records (EMRs). The architecture combines temporal embeddings, patient context, and Transformer-based sequence modeling to predict or impute patient events over time.
 
-This model is a part of my thesis and will be used on actual EMR data, stored in a closed environment. For that, it is organized as a package that can be installed:
+This repo is part of an unpublished thesis and will be finalized post-submission. **Please do not reuse without permission**.
+
+This model will be used on actual EMR data, stored in a closed environment. For that, it is organized as a package that can be installed:
 
 ```bash
 event-prediction-in-diabetes-care/
@@ -136,7 +138,7 @@ python -m transform_emr.train
 
 python -m transform_emr.inference
 
-# Both modules have a __main__ activation to train / infer on atrained model 
+# Both modules have a __main__ activation to train / infer on a trained model 
 ```
 ---
 
@@ -148,7 +150,7 @@ Run all tests:
 pytest tests/
 ```
 
-📝 If you have **not trained the model yet**, skip inference-related tests:
+📝 If you have **not trained a model yet**, skip inference-related tests:
 
 ```bash
 pytest tests/test_dataset.py tests/test_embedder.py tests/test_train_pipeline.py
