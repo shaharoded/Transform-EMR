@@ -84,7 +84,7 @@ TRAINING_SETTINGS = {
             "ce":      0.50,    # Next-token CE nudge cap
             "dt":      0.50,    # Time regression cap
             "ranking": 0.20,    # Pairwise AUROC-proxy ranking loss on the outcome head
-            "ttt":     0.30,    # Time-to-terminal regression cap (direction C)
+            "ttt":     0.60,    # Time-to-terminal regression cap (locked: 0.30 → 0.60 to learn to terminate)
         },
         "order": [["ce", "dt", "ttt"], ["ranking"]],
         "ramp_epochs": {

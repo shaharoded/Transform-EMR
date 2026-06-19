@@ -49,7 +49,7 @@ MEAL_TOKENS = ["MEAL_CONTEXT_Breakfast", "MEAL_CONTEXT_Lunch", "MEAL_CONTEXT_Din
 # Outcomes below this threshold are dropped — they have too few positive examples to learn from.
 OUTCOME_RARE_THRESHOLD_PCT = 1.0
 
-USE_QA_DATA = True  # Step 4 QA toggle on M-128 platform: keeps %_PATTERN% events (vocab grows from non-QA 453) + adds QA ComplianceScore context features (ctx_dim grows from 7). Revert to False after.
+USE_QA_DATA = False  # Locked: paper-aligned eval drops QA (%_PATTERN% events + ComplianceScore ctx features). The QA-on path is preserved for ablation; flip to True to recover it.
 # Observation window (hours from admission) the model is seeded with. Same window is
 # used to (a) aggregate QA ComplianceScore into context features and (b) define the
 # "post-observation" range over which outcome support is measured for rare-outcome
