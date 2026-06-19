@@ -751,7 +751,27 @@ class EMRTokenizer:
             tok_id = token2id.get(ignore_tok)
             if tok_id is not None:
                 token_weights[tok_id] = 0.0
-        
+        # Data-driven terminal-emission weighting (locked). The model otherwise
+        # under-emits RELEASE/DEATH at generation (trajectories hit max_len
+        # without a natural terminal). Up-weight terminal tokens in the LM-head
+        # BCE so it learns to EMIT them, not just time them via ttt. The weight
+        # is the per-target-position class-imbalance ratio neg/pos for each
+        # terminal token (same convention as the outcome head's pos_weight),
+        # damped via p^0.33 for stability — empirically the right damping among
+        # {sqrt, log, p33}: stronger than log (which under-corrects → 42%
+        # forced terminals) and milder than sqrt (which over-clips).
+        _term_counts = df["PositionToken"].value_counts()
+        _total_positions = float(_term_counts.sum())
+        for _term_tok in TERMINAL_OUTCOMES:
+            _tok_id = token2id.get(_term_tok)
+            _c = float(_term_counts.get(_term_tok, 0.0))
+            if _tok_id is not None and _c > 0:
+                _neg_over_pos = (_total_positions - _c) / _c
+                _w = float(_neg_over_pos ** 0.33)
+                token_weights[_tok_id] = max(_w, 1.0)
+                print(f"[tokenizer] data-driven terminal weight {_term_tok}: "
+                      f"count={int(_c)} neg/pos={_neg_over_pos:.1f} -> w={_w:.2f}")
+
         # === Calculate Outcome Weights (Auxiliary Head) ===
         # We calculate pos_weight based on Patient Prevalence.
         # Logic: ratio of negative_patients / positive_patients
