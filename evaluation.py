@@ -48,7 +48,7 @@ from intervene_ar.inference import generate
 EVAL_INPUT_DAYS  = 2      # days of patient history used as generation seed
 EVAL_WINDOW_HOURS = 24.0  # non-overlapping prediction window size
 EVAL_GRACE_HOURS  = 24.0  # tolerance added to each window edge for positive labelling
-EVAL_MAX_LEN      = 500   # max generated steps per patient
+EVAL_MAX_LEN      = 2000  # max generated steps per patient
 EVAL_TEMPERATURE  = 1.0   # sampling temperature (no top-k filtering)
 EVAL_FULL_HORIZON_HOURS = 336.0  # cap per-patient eval horizon at 14 days (matches training/inference)
 # Strict lower bound (hours) on positive-label events. Outcomes occurring in
